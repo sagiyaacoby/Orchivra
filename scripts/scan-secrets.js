@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * TeamHero Secret Scanner
+ * Orchivra Secret Scanner
  * Scans files for accidentally committed secrets, API keys, tokens, and credentials.
  *
  * Usage:

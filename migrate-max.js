@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * migrate-max.js — Migrates tasks from MAX (markdown) format into TeamHero API.
+ * migrate-max.js — Migrates tasks from MAX (markdown) format into Orchivra API.
  *
  * Usage:
  *   node migrate-max.js
  *
- * Requires the TeamHero server to be running at http://localhost:3782.
+ * Requires the Orchivra server to be running at http://localhost:3782.
  */
 
 const fs = require('fs');
@@ -194,13 +194,13 @@ function parseMaxTask(content) {
 
 // ── Main migration ──────────────────────────────────────
 async function migrate() {
-  console.log('=== MAX to TeamHero Migration ===\n');
+  console.log('=== MAX to Orchivra Migration ===\n');
 
   // Verify API is running
   try {
     await apiRequest('GET', '/api/tasks');
   } catch(e) {
-    console.error('ERROR: Cannot connect to TeamHero API at ' + API_BASE);
+    console.error('ERROR: Cannot connect to Orchivra API at ' + API_BASE);
     console.error('Make sure the server is running (node server.js)');
     process.exit(1);
   }
@@ -229,7 +229,7 @@ async function migrate() {
     var idMatch = file.match(/^([A-Z]-\d+)/);
     var taskId = idMatch ? idMatch[1].toLowerCase() : file.replace(/\.md$/, '').toLowerCase().replace(/\s+/g, '-');
 
-    // Map agent name to TeamHero agent ID
+    // Map agent name to Orchivra agent ID
     var assignedTo = AGENT_MAP[parsed.agent] || 'orchestrator';
 
     console.log('[' + (i + 1) + '/' + files.length + '] ' + file);

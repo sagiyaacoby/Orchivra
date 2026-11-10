@@ -1,7 +1,7 @@
 {
   "name": "ai-hero-project",
   "version": "2.8.2",
-  "description": "AI-Hero - Multi-agent orchestration powered by Claude CLI",
+  "description": "Orchivra - Multi-agent orchestration powered by Claude CLI",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

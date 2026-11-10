@@ -1,4 +1,8 @@
-# TeamHero
+# Orchivra
+
+Open-source orchestration for AI agent teams.
+
+This project was previously named TeamHero. It has been renamed to Orchivra to avoid confusion with the separate Teamhero personnel-management product. Existing project folders and user data do not need to be renamed.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933)](https://nodejs.org/)
@@ -14,7 +18,7 @@ We have decades of tools for managing people - project boards, task trackers, re
 
 So I built it. The result became [Kapow](https://gokapow.com) - a managed AI agent platform for businesses. The feedback was immediate. People got it. The idea that agents should work in a structured team with real project management discipline - not just run loose - resonated with developers and business owners alike.
 
-That response made something clear: the need for structured agent orchestration goes way beyond one product. As an entrepreneur, I decided the best thing I could do was release the core architecture as open source to share the unique methodology of running agents at scale. TeamHero is that release - the full orchestration platform under MIT license, no restrictions, nothing held back. My contribution to the open source community.
+That response made something clear: the need for structured agent orchestration goes way beyond one product. As an entrepreneur, I decided the best thing I could do was release the core architecture as open source to share the unique methodology of running agents at scale. Orchivra is that release - the full orchestration platform under MIT license, no restrictions, nothing held back. My contribution to the open source community.
 
 ---
 
@@ -32,9 +36,9 @@ That response made something clear: the need for structured agent orchestration 
 
 ## What Makes It Different
 
-Most agent frameworks focus on creating agents. TeamHero focuses on managing them. The difference matters when you have multiple agents working on the same project - you need plans before execution, tracked deliverables, conflict prevention, and a single source of truth for what is happening across your team.
+Most agent frameworks focus on creating agents. Orchivra focuses on managing them. The difference matters when you have multiple agents working on the same project - you need plans before execution, tracked deliverables, conflict prevention, and a single source of truth for what is happening across your team.
 
-TeamHero brings real project management to AI agents. Every task goes through plan, review, execute, and deliver. Every agent has persistent memory. Every file touched is declared upfront so agents do not overwrite each other. It is the discipline that makes agents actually useful at scale - not throwing more of them at the problem.
+Orchivra brings real project management to AI agents. Every task goes through plan, review, execute, and deliver. Every agent has persistent memory. Every file touched is declared upfront so agents do not overwrite each other. It is the discipline that makes agents actually useful at scale - not throwing more of them at the problem.
 
 ---
 
@@ -60,7 +64,7 @@ npm install -g @anthropic-ai/claude-code
 ### Install
 
 ```bash
-git clone https://github.com/sagiyaacoby/TeamHero.git my-team
+git clone https://github.com/sagiyaacoby/Orchivra.git my-team
 cd my-team
 npm install
 ```
@@ -89,6 +93,6 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 ## License
 
-TeamHero is open source under the [MIT License](LICENSE).
+Orchivra is open source under the [MIT License](LICENSE).
 
-The names "TeamHero" and "Kapow" are trademarks of Sagi Yaacoby. See [TRADEMARK.md](TRADEMARK.md) for details.
+The names "Orchivra" and "Kapow" are trademarks of Sagi Yaacoby. See [TRADEMARK.md](TRADEMARK.md) for details.

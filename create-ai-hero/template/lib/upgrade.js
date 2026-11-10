@@ -1,7 +1,7 @@
 // ── Upgrade / Update Mechanism (GitHub Releases) ─────────
 // Full upgrade flow: pre-checks, backup, download, migrate, rebuild, rollback
 
-var GITHUB_REPO = 'sagiyaacoby/TeamHero';
+var GITHUB_REPO = 'sagiyaacoby/Orchivra';
 // User data paths - NEVER overwritten during upgrade.
 // Everything else in the tarball is platform code and gets extracted.
 var USER_DATA_PATHS = [
@@ -26,7 +26,7 @@ var PLATFORM_FILES = [
 function httpsGet(url) {
   var https = require('https');
   return new Promise(function(resolve, reject) {
-    var opts = { headers: { 'User-Agent': 'TeamHero-Updater', 'Accept': 'application/vnd.github.v3+json' } };
+    var opts = { headers: { 'User-Agent': 'Orchivra-Updater', 'Accept': 'application/vnd.github.v3+json' } };
     var parsed = new URL(url);
     opts.hostname = parsed.hostname;
     opts.path = parsed.pathname + parsed.search;

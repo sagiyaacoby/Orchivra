@@ -1,0 +1,23 @@
+{
+  "name": "create-orchivra",
+  "version": "2.9.0",
+  "description": "Create a new Orchivra agent team - multi-agent orchestration powered by Claude CLI",
+  "bin": {
+    "create-orchivra": "./index.js"
+  },
+  "keywords": ["ai", "agents", "claude", "orchestration", "orchivra", "multi-agent", "ai-team"],
+  "author": "Sagi Yaacoby (https://github.com/sagiyaacoby)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sagiyaacoby/Orchivra.git"
+  },
+  "homepage": "https://github.com/sagiyaacoby/Orchivra",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "template/"
+  ]
+}

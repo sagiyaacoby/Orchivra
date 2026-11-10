@@ -485,7 +485,7 @@ All UI elements (sidebar icons, buttons, badges, toggles) MUST use monochrome/sy
 - No colored backgrounds that stand out from the system design
 - When in doubt, look at existing sidebar items and match their style
 
-This applies to the TeamHero portal.
+This applies to the Orchivra portal.
 ## Orchestrator Availability (HARD RULE - ENFORCED)
 
 The orchestrator MUST remain available and responsive to the owner at ALL times. Agents work in the background - the orchestrator never blocks on agent execution.

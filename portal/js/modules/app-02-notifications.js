@@ -1,4 +1,12 @@
   // ── Notification System ─────────────────────────────
+  // Preserve preferences saved before the product rename.
+  ['browser', 'sound'].forEach(function(kind) {
+    var currentKey = 'orchivra-notifications-' + kind;
+    var previousKey = 'teamhero-notifications-' + kind;
+    if (localStorage.getItem(currentKey) === null && localStorage.getItem(previousKey) !== null) {
+      localStorage.setItem(currentKey, localStorage.getItem(previousKey));
+    }
+  });
   var notifications = [];
   var notifUnreadCount = 0;
   var notifSoundLastPlayed = 0;
@@ -146,14 +154,14 @@
 
   // Browser Notifications
   function sendBrowserNotification(notif) {
-    if (localStorage.getItem('teamhero-notifications-browser') === 'false') return;
+    if (localStorage.getItem('orchivra-notifications-browser') === 'false') return;
     if (!document.hidden) return;
     if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') {
-      var bn = new Notification('TeamHero', {
+      var bn = new Notification('Orchivra', {
         body: notif.title,
         icon: '/favicon.ico',
-        tag: 'teamhero-' + (notif.taskId || notif.id),
+        tag: 'orchivra-' + (notif.taskId || notif.id),
         requireInteraction: false
       });
       bn.onclick = function() {
@@ -168,7 +176,7 @@
 
   // Sound Alerts
   function playNotifSound() {
-    if (localStorage.getItem('teamhero-notifications-sound') === 'false') return;
+    if (localStorage.getItem('orchivra-notifications-sound') === 'false') return;
     var now = Date.now();
     if (now - notifSoundLastPlayed < NOTIF_SOUND_DEBOUNCE) return;
     notifSoundLastPlayed = now;
@@ -193,15 +201,15 @@
   function loadNotifPrefs() {
     var br = document.getElementById('notif-toggle-browser');
     var snd = document.getElementById('notif-toggle-sound');
-    if (br) br.checked = localStorage.getItem('teamhero-notifications-browser') !== 'false';
-    if (snd) snd.checked = localStorage.getItem('teamhero-notifications-sound') !== 'false';
+    if (br) br.checked = localStorage.getItem('orchivra-notifications-browser') !== 'false';
+    if (snd) snd.checked = localStorage.getItem('orchivra-notifications-sound') !== 'false';
   }
 
   function saveNotifPrefs() {
     var br = document.getElementById('notif-toggle-browser');
     var snd = document.getElementById('notif-toggle-sound');
-    if (br) localStorage.setItem('teamhero-notifications-browser', br.checked ? 'true' : 'false');
-    if (snd) localStorage.setItem('teamhero-notifications-sound', snd.checked ? 'true' : 'false');
+    if (br) localStorage.setItem('orchivra-notifications-browser', br.checked ? 'true' : 'false');
+    if (snd) localStorage.setItem('orchivra-notifications-sound', snd.checked ? 'true' : 'false');
     if (br && br.checked && 'Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }

@@ -121,15 +121,15 @@ timeout /t 3 /nobreak >NUL 2>&1
 set "PORTAL_PORT=3797"
 for /f "tokens=2 delims=:, " %%a in ('findstr /c:"\"port\"" config\system.json 2^>NUL') do set "PORTAL_PORT=%%a"
 
-:: Verify identity - ensure TeamHero is actually responding on this port
+:: Verify identity - ensure Orchivra is actually responding on this port
 set "IDENTITY_OK=0"
 for /f "tokens=*" %%i in ('node -e "var h=require(\"http\");h.get(\"http://localhost:%PORTAL_PORT%/api/identity\",{timeout:2000},function(r){var d=\"\";r.on(\"data\",function(c){d+=c});r.on(\"end\",function(){try{var j=JSON.parse(d);console.log(j.product||\"unknown\")}catch(e){console.log(\"unknown\")}})}).on(\"error\",function(){console.log(\"unreachable\")})" 2^>NUL') do (
-    if "%%i"=="teamhero" set "IDENTITY_OK=1"
+    if "%%i"=="orchivra" set "IDENTITY_OK=1"
 )
 
 if "%IDENTITY_OK%"=="0" (
     echo.
-    echo  WARNING: Port %PORTAL_PORT% is not responding as TeamHero.
+    echo  WARNING: Port %PORTAL_PORT% is not responding as Orchivra.
     echo  Another service may be occupying this port.
     echo.
 )

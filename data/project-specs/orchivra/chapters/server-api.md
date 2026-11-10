@@ -1,6 +1,6 @@
-# Dashboard Portal
+# Server & API
 
-**Project:** TeamHero
+**Project:** Orchivra
 **Status:** stable
 **Last Updated:** 2026-03-31
 **Last Updated By:** Dev (task mnf4kkmilplrwz)

@@ -35,7 +35,7 @@ function prompt(question, defaultValue) {
 var args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   log('');
-  log(c.bold + '  AI-Hero' + c.reset + ' - Multi-agent orchestration powered by Claude CLI');
+  log(c.bold + '  Orchivra' + c.reset + ' - Multi-agent orchestration powered by Claude CLI');
   log('');
   log('  ' + c.dim + 'Usage:' + c.reset);
   log('    npx create-ai-hero ' + c.cyan + '[project-name]' + c.reset);
@@ -51,7 +51,7 @@ if (args.includes('--help') || args.includes('-h')) {
 async function main() {
 
 log('');
-log(c.bold + '  AI-Hero v' + VERSION + c.reset);
+log(c.bold + '  Orchivra v' + VERSION + c.reset);
 log(c.dim + '  Multi-agent orchestration powered by Claude CLI' + c.reset);
 log('');
 
@@ -139,7 +139,7 @@ try {
 } catch(e) {}
 
 log('');
-log(c.bold + c.green + '  ✓ AI-Hero project ready!' + c.reset);
+log(c.bold + c.green + '  ✓ Orchivra project ready!' + c.reset);
 log('');
 log('  ' + c.dim + 'Next steps:' + c.reset);
 log('');

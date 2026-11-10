@@ -1,4 +1,4 @@
-# TeamHero Agent OS (Minimal)
+# Orchivra Agent OS (Minimal)
 
 ## Security (MANDATORY)
 - All file ops stay within project root

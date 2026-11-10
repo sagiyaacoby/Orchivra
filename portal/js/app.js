@@ -1,6 +1,15 @@
 (function() {
   'use strict';
 
+  // Preserve preferences saved before the product rename.
+  ['browser', 'sound'].forEach(function(kind) {
+    var currentKey = 'orchivra-notifications-' + kind;
+    var previousKey = 'teamhero-notifications-' + kind;
+    if (localStorage.getItem(currentKey) === null && localStorage.getItem(previousKey) !== null) {
+      localStorage.setItem(currentKey, localStorage.getItem(previousKey));
+    }
+  });
+
   // ── State ──────────────────────────────────────────
   let state = {
     currentView: 'dashboard',
@@ -470,14 +479,14 @@
 
   // Browser Notifications
   function sendBrowserNotification(notif) {
-    if (localStorage.getItem('teamhero-notifications-browser') === 'false') return;
+    if (localStorage.getItem('orchivra-notifications-browser') === 'false') return;
     if (!document.hidden) return;
     if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') {
-      var bn = new Notification('TeamHero', {
+      var bn = new Notification('Orchivra', {
         body: notif.title,
         icon: '/favicon.ico',
-        tag: 'teamhero-' + (notif.taskId || notif.id),
+        tag: 'orchivra-' + (notif.taskId || notif.id),
         requireInteraction: false
       });
       bn.onclick = function() {
@@ -492,7 +501,7 @@
 
   // Sound Alerts
   function playNotifSound() {
-    if (localStorage.getItem('teamhero-notifications-sound') === 'false') return;
+    if (localStorage.getItem('orchivra-notifications-sound') === 'false') return;
     var now = Date.now();
     if (now - notifSoundLastPlayed < NOTIF_SOUND_DEBOUNCE) return;
     notifSoundLastPlayed = now;
@@ -517,15 +526,15 @@
   function loadNotifPrefs() {
     var br = document.getElementById('notif-toggle-browser');
     var snd = document.getElementById('notif-toggle-sound');
-    if (br) br.checked = localStorage.getItem('teamhero-notifications-browser') !== 'false';
-    if (snd) snd.checked = localStorage.getItem('teamhero-notifications-sound') !== 'false';
+    if (br) br.checked = localStorage.getItem('orchivra-notifications-browser') !== 'false';
+    if (snd) snd.checked = localStorage.getItem('orchivra-notifications-sound') !== 'false';
   }
 
   function saveNotifPrefs() {
     var br = document.getElementById('notif-toggle-browser');
     var snd = document.getElementById('notif-toggle-sound');
-    if (br) localStorage.setItem('teamhero-notifications-browser', br.checked ? 'true' : 'false');
-    if (snd) localStorage.setItem('teamhero-notifications-sound', snd.checked ? 'true' : 'false');
+    if (br) localStorage.setItem('orchivra-notifications-browser', br.checked ? 'true' : 'false');
+    if (snd) localStorage.setItem('orchivra-notifications-sound', snd.checked ? 'true' : 'false');
     if (br && br.checked && 'Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
@@ -5142,7 +5151,7 @@
       if (cliCard) { cliCard.classList.toggle('active', method === 'cli'); }
       if (apiCard) { apiCard.classList.toggle('active', method === 'api'); }
 
-      // TeamHero standalone: no plan gating - both methods always available
+      // Orchivra standalone: no plan gating - both methods always available
     } catch(e) {
       labelEl.textContent = 'Error';
       detailEl.textContent = 'Failed to check connection status';
@@ -7665,10 +7674,10 @@
   // ── Help Section ─────────────────────────────────────
   var helpTopics = [
     {
-      title: 'How TeamHero Works',
+      title: 'How Orchivra Works',
       icon: '&#9733;',
-      content: '<h2>How TeamHero Works</h2>' +
-        '<p>TeamHero is an <strong>AI agent team management platform</strong>. You manage a team of AI agents the same way you' + q + 'd manage a team of people - by assigning work, reviewing results, and giving feedback.</p>' +
+      content: '<h2>How Orchivra Works</h2>' +
+        '<p>Orchivra is an <strong>AI agent team management platform</strong>. You manage a team of AI agents the same way you' + q + 'd manage a team of people - by assigning work, reviewing results, and giving feedback.</p>' +
         '<h3>The Three Layers</h3>' +
         '<ol>' +
         '<li><strong>You (the Owner)</strong> - You set goals, review deliverables, and provide feedback. You talk to the orchestrator through the Command Center.</li>' +
@@ -7902,7 +7911,7 @@
       title: 'Security & Secrets',
       icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
       content: '<h2>Security &amp; Secrets</h2>' +
-        '<p>TeamHero runs <strong>100% locally</strong> on your machine. No cloud, no external servers, no telemetry. Your data never leaves your computer unless you explicitly tell an agent to post or send something.</p>' +
+        '<p>Orchivra runs <strong>100% locally</strong> on your machine. No cloud, no external servers, no telemetry. Your data never leaves your computer unless you explicitly tell an agent to post or send something.</p>' +
         '<h3>Agent Sandbox - What You Need to Know</h3>' +
         '<p>Agents are instructed to stay within the project folder and follow security rules. However, <strong>this is enforced by rules, not by a technical sandbox</strong>. Agents run as Claude Code subprocesses with the same OS permissions as your user account. In theory, an agent could access files or run commands outside the project if it ignored its instructions.</p>' +
         '<p>The layers of protection:</p>' +
@@ -7914,14 +7923,14 @@
         '</ul>' +
         '<p><strong>Recommendation:</strong> If your machine has sensitive files outside the project, use <strong>supervised mode</strong>. Use autonomous mode only when you trust the workflow and have reviewed your agent rules. You can switch modes anytime in Settings.</p>' +
         '<h3>Two Storage Systems</h3>' +
-        '<p>TeamHero has two separate systems for storing sensitive information:</p>' +
+        '<p>Orchivra has two separate systems for storing sensitive information:</p>' +
         '<ul>' +
         '<li><strong>Secrets Vault</strong> - For <strong>API keys, tokens, and service credentials</strong>. Encrypted with AES-256-GCM. Injected as environment variables (e.g. <code>$TRELLO_API_KEY</code>). Managed in Settings &gt; Secrets &amp; API Keys.</li>' +
         '<li><strong>Credentials Manager</strong> - For <strong>website login credentials</strong> (service name, username, password). Injected as paired environment variables: <code>{SERVICE}_USERNAME</code> and <code>{SERVICE}_PASSWORD</code>. Managed in Settings &gt; Credentials. Use this for platform logins agents need for browser-based tasks.</li>' +
         '</ul>' +
         '<p>Both are stored locally and encrypted. Neither uses the OS keychain.</p>' +
         '<h3>Secret Storage (Vault)</h3>' +
-        '<p>API keys and tokens are stored in a single <strong>encrypted file</strong>: <code>config/secrets.enc</code>. This is TeamHero' + q + 's own vault - it does <strong>not</strong> use the OS keychain (Windows Credential Manager, macOS Keychain, etc.). The file is self-contained and portable with your project.</p>' +
+        '<p>API keys and tokens are stored in a single <strong>encrypted file</strong>: <code>config/secrets.enc</code>. This is Orchivra' + q + 's own vault - it does <strong>not</strong> use the OS keychain (Windows Credential Manager, macOS Keychain, etc.). The file is self-contained and portable with your project.</p>' +
         '<h3>How the Vault Works</h3>' +
         '<p>The encrypted file structure: <code>[32-byte salt] [12-byte IV] [16-byte auth tag] [ciphertext]</code></p>' +
         '<ul>' +
@@ -7938,7 +7947,7 @@
         '<li><strong>AI agents can use your keys.</strong> When secrets are unlocked, agents receive them as environment variables. A misconfigured or poorly prompted agent could call an API in ways you did not intend. Always review agent rules and use supervised mode for sensitive operations.</li>' +
         '<li><strong>The encrypted file is only as strong as your password.</strong> A weak master password can be brute-forced offline. Use a strong, unique password.</li>' +
         '<li><strong>No access control between agents.</strong> All unlocked secrets are available to all agents. You cannot restrict specific keys to specific agents. If an agent should not have access to a key, do not store it in the vault while that agent is active.</li>' +
-        '<li><strong>Local network exposure:</strong> The dashboard runs on localhost. If your machine is on a shared network and the port is accessible, others could potentially reach the dashboard. TeamHero does not have authentication on the web UI.</li>' +
+        '<li><strong>Local network exposure:</strong> The dashboard runs on localhost. If your machine is on a shared network and the port is accessible, others could potentially reach the dashboard. Orchivra does not have authentication on the web UI.</li>' +
         '</ul>' +
         '<h3>Secret Injection</h3>' +
         '<p>When the vault is unlocked, secrets are injected as <strong>environment variables</strong> into agent sessions. Agents can use them (e.g. <code>$TRELLO_API_KEY</code>) but never see the actual values in plain text.</p>' +
@@ -7988,7 +7997,7 @@
         '<h3>Updates &amp; Self-Healing</h3>' +
         '<p>Check for platform updates from GitHub. Updates only affect platform files - your agents, tasks, and data are never touched. The upgrade system includes <strong>self-healing</strong>: if critical bootstrap files (launch scripts, package.json) are missing or corrupted, the updater detects and restores them automatically.</p>' +
         '<h3>CLI Installer</h3>' +
-        '<p>When installing TeamHero via the CLI, the installer prompts you for a <strong>folder name</strong> for your team. This becomes the project directory where all your team data lives.</p>' +
+        '<p>When installing Orchivra via the CLI, the installer prompts you for a <strong>folder name</strong> for your team. This becomes the project directory where all your team data lives.</p>' +
         '<button class="help-go-link" onclick="App.navigate(\'settings\')">Go to Settings &#8594;</button>'
     }
   ];
@@ -8401,7 +8410,7 @@
 
     api.get('/api/diagnostics').then(function(diag) {
       _bugDiagnostics = diag;
-      var summary = (diag.appVersion ? 'TeamHero v' + diag.appVersion : 'TeamHero') +
+      var summary = (diag.appVersion ? 'Orchivra v' + diag.appVersion : 'Orchivra') +
         ' | ' + (diag.platform === 'win32' ? 'Windows' : diag.platform) + ' ' + (diag.osRelease || '') +
         ' | Node ' + (diag.nodeVersion || '');
       document.getElementById('bug-report-diag-summary').textContent = summary;

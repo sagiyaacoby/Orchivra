@@ -123,12 +123,12 @@ sleep 3
 # Re-read port from config/system.json (server may have auto-selected a different port)
 PORTAL_PORT=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('config/system.json','utf8')).port||3797)}catch(e){console.log(3797)}" 2>/dev/null)
 
-# Verify identity - ensure TeamHero is actually responding on this port
+# Verify identity - ensure Orchivra is actually responding on this port
 IDENTITY=$(node -e "var h=require('http');h.get('http://localhost:${PORTAL_PORT}/api/identity',{timeout:2000},function(r){var d='';r.on('data',function(c){d+=c});r.on('end',function(){try{var j=JSON.parse(d);console.log(j.product||'unknown')}catch(e){console.log('unknown')}})}).on('error',function(){console.log('unreachable')})" 2>/dev/null)
 
-if [ "$IDENTITY" != "teamhero" ]; then
+if [ "$IDENTITY" != "orchivra" ]; then
     echo ""
-    echo "  WARNING: Port ${PORTAL_PORT} is not responding as TeamHero."
+    echo "  WARNING: Port ${PORTAL_PORT} is not responding as Orchivra."
     echo "  Another service may be occupying this port."
     echo ""
 fi

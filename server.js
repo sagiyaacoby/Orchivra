@@ -16,7 +16,7 @@ const net = require('net');
   try {
     var pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     var version = pkg.version || '0.0.0';
-    var repo = 'sagiyaacoby/TeamHero';
+    var repo = 'sagiyaacoby/Orchivra';
     var url = 'https://api.github.com/repos/' + repo + '/tarball/v' + version;
 
     console.log('  Bootstrap: Downloading v' + version + ' tarball...');
@@ -32,7 +32,7 @@ const net = require('net');
       'var url = process.argv[3];',
       '',
       'function download(url, cb) {',
-      '  https.get(url, { headers: { "User-Agent": "TeamHero-Bootstrap" } }, function(res) {',
+      '  https.get(url, { headers: { "User-Agent": "Orchivra-Bootstrap" } }, function(res) {',
       '    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {',
       '      return download(res.headers.location, cb);',
       '    }',
@@ -98,7 +98,7 @@ const net = require('net');
     console.log('  Bootstrap: Self-heal complete.');
   } catch(e) {
     console.error('  Bootstrap: Self-heal failed: ' + e.message);
-    console.error('  Please manually download the latest release from https://github.com/sagiyaacoby/TeamHero/releases');
+    console.error('  Please manually download the latest release from https://github.com/sagiyaacoby/Orchivra/releases');
     process.exit(1);
   }
 })();
@@ -1028,7 +1028,7 @@ function rebuildClaudeMd() {
     '- Short memory entries >14 days old are stale. Never store raw API data or debug info in memory.\n\n' +
 
     '\n## UI Design Rule: Monochrome System Icons Only (HARD RULE)\n\n' +
-    'All UI elements MUST use monochrome/system design - no colorful emojis or colored icons. Match the dark theme. Applies to TeamHero portal.\n' +
+    'All UI elements MUST use monochrome/system design - no colorful emojis or colored icons. Match the dark theme. Applies to Orchivra portal.\n' +
 
     '## Orchestrator Availability (HARD RULE)\n\n' +
     'The orchestrator MUST remain responsive. **ALWAYS use `run_in_background: true`** unless result is needed immediately. Confirm launch to owner, report results when agent completes.\n\n' +
@@ -1105,8 +1105,8 @@ function rebuildAgentOs() {
   var sys = readJSON(path.join(ROOT, 'config/system.json')) || {};
   var port = PORT || sys.port || getConfiguredPort() || 3797;
 
-  var md = '# TeamHero Agent OS\n\n' +
-    'You are a TeamHero agent. These are your operational rules. Follow them exactly.\n\n' +
+  var md = '# Orchivra Agent OS\n\n' +
+    'You are an Orchivra agent. These are your operational rules. Follow them exactly.\n\n' +
 
     '## #1 Rule: Plan First, Then Execute\n' +
     '- Every task follows: Plan -> Review -> Execute -> Done\n' +
@@ -1975,7 +1975,7 @@ async function handle(pn, m, req, res) {
     warper: ['warper', 'top bar', 'topbar'],
     ui: ['dashboard', 'portal', 'ui', 'modal', 'dialog', 'sidebar', 'layout'],
 
-    teamhero: ['teamhero', 'team hero'],
+    orchivra: ['orchivra'],
     research: ['research', 'analyze', 'analysis', 'investigate', 'survey'],
     content: ['content', 'post', 'social', 'blog', 'article', 'tweet'],
     automation: ['automat', 'scheduler', 'cron', 'recurring'],
@@ -3610,10 +3610,10 @@ async function handle(pn, m, req, res) {
   if (pn === '/api/identity' && m === 'GET') {
     var idSys = readJSON(path.join(ROOT, 'config/system.json')) || {};
     return J(res, {
-      product: 'teamhero',
+      product: 'orchivra',
       version: idSys.version || '0.0.0',
       port: PORT,
-      teamName: idSys.teamName || 'TeamHero',
+      teamName: idSys.teamName || 'Orchivra',
       instanceId: path.basename(ROOT)
     });
   }
@@ -3928,7 +3928,7 @@ async function handle(pn, m, req, res) {
     try {
       var ghArgs = [
         'issue', 'create',
-        '--repo', 'sagiyaacoby/TeamHero',
+        '--repo', 'sagiyaacoby/Orchivra',
         '--title', b.title.trim(),
         '--body', issueBody,
         '--label', labels.join(',')
@@ -4882,8 +4882,8 @@ function probePortIdentity(port) {
     // Port is busy - identify what occupies it
     var identity = await probePortIdentity(requestedPort);
     if (identity) {
-      if (identity.product === 'teamhero') {
-        console.log('  Port ' + requestedPort + ' in use by TeamHero instance \'' + (identity.instanceId || 'unknown') + '\' (v' + (identity.version || '?') + ')');
+      if (identity.product === 'orchivra') {
+        console.log('  Port ' + requestedPort + ' in use by Orchivra instance \'' + (identity.instanceId || 'unknown') + '\' (v' + (identity.version || '?') + ')');
       } else {
         console.log('  Port ' + requestedPort + ' in use by ' + (identity.product || 'unknown service'));
       }

@@ -1,6 +1,6 @@
-# TeamHero Agent OS (Slim)
+# Orchivra Agent OS (Slim)
 
-You are a TeamHero agent. Follow these rules exactly.
+You are an Orchivra agent. Follow these rules exactly.
 
 ## Task Lifecycle
 

@@ -1,6 +1,6 @@
 # Project Spec System
 
-**Project:** TeamHero
+**Project:** Orchivra
 **Status:** in-progress
 **Last Updated:** 2026-03-31
 **Last Updated By:** Dev (task mnf4kkmilplrwz)

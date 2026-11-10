@@ -1,6 +1,13 @@
 # Changelog
 
-All notable changes to TeamHero are documented here.
+## Unreleased — Orchivra rename
+
+- Rename the project, dashboard, documentation, package metadata, and primary installer to Orchivra.
+- Update GitHub links and the updater to the renamed repository.
+- Preserve notification preferences from earlier installations.
+- Replace unverified domain-based contact addresses with GitHub contact routes.
+
+All notable changes to Orchivra are documented here.
 
 ## v3.1.0
 
@@ -29,7 +36,7 @@ All notable changes to TeamHero are documented here.
 
 ## v3.0.0
 
-- TeamHero 3.0 release - major platform overhaul
+- Orchivra 3.0 release - major platform overhaul
 
 ## v2.12.0
 
@@ -274,4 +281,4 @@ All notable changes to TeamHero are documented here.
 
 ## v1.0.0
 
-- Initial release: TeamHero multi-agent orchestration platform
+- Initial release: Orchivra multi-agent orchestration platform

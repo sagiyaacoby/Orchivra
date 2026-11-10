@@ -1,13 +1,13 @@
-# Contributing to TeamHero
+# Contributing to Orchivra
 
-Thanks for your interest in contributing to TeamHero! This guide covers everything you need to get started.
+Thanks for your interest in contributing to Orchivra! This guide covers everything you need to get started.
 
 ## Running Locally
 
 1. Fork and clone:
    ```bash
-   git clone https://github.com/YOUR-USERNAME/TeamHero.git
-   cd TeamHero
+   git clone https://github.com/YOUR-USERNAME/Orchivra.git
+   cd Orchivra
    npm install
    ```
 
@@ -27,7 +27,7 @@ Thanks for your interest in contributing to TeamHero! This guide covers everythi
 ## Project Structure
 
 ```
-TeamHero/
+Orchivra/
 ├── server.js         # API server (Node.js, no frameworks)
 ├── portal/           # Dashboard web UI (vanilla HTML/CSS/JS)
 │   ├── index.html
@@ -48,7 +48,7 @@ TeamHero/
 - **Agent templates** - new agent personalities and roles for different team types
 - **Issue triage** - reproducing bugs, adding details to reports
 - **Feature ideas** - open an issue to discuss before building
-- **Translations** - help make TeamHero accessible in more languages
+- **Translations** - help make Orchivra accessible in more languages
 - **Tests** - we'd love more test coverage
 
 ## Pull Request Process

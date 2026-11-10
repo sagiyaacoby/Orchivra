@@ -16,7 +16,7 @@ const net = require('net');
   try {
     var pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     var version = pkg.version || '0.0.0';
-    var repo = 'sagiyaacoby/TeamHero';
+    var repo = 'sagiyaacoby/Orchivra';
     var url = 'https://api.github.com/repos/' + repo + '/tarball/v' + version;
 
     console.log('  Bootstrap: Downloading v' + version + ' tarball...');
@@ -32,7 +32,7 @@ const net = require('net');
       'var url = process.argv[3];',
       '',
       'function download(url, cb) {',
-      '  https.get(url, { headers: { "User-Agent": "TeamHero-Bootstrap" } }, function(res) {',
+      '  https.get(url, { headers: { "User-Agent": "Orchivra-Bootstrap" } }, function(res) {',
       '    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {',
       '      return download(res.headers.location, cb);',
       '    }',
@@ -98,7 +98,7 @@ const net = require('net');
     console.log('  Bootstrap: Self-heal complete.');
   } catch(e) {
     console.error('  Bootstrap: Self-heal failed: ' + e.message);
-    console.error('  Please manually download the latest release from https://github.com/sagiyaacoby/TeamHero/releases');
+    console.error('  Please manually download the latest release from https://github.com/sagiyaacoby/Orchivra/releases');
     process.exit(1);
   }
 })();
@@ -2284,7 +2284,7 @@ if (healthResult.issues.length > 0) {
   // Check if port is available - fail loudly if busy (never auto-switch)
   if (!(await isPortFree(requestedPort))) {
     console.error('\n  ERROR: Port ' + requestedPort + ' is already in use.');
-    console.error('  TeamHero requires this port. Please free it and try again.');
+    console.error('  Orchivra requires this port. Please free it and try again.');
     console.error('  To find what is using it: lsof -i :' + requestedPort + ' (macOS/Linux) or netstat -ano | findstr ' + requestedPort + ' (Windows)\n');
     process.exit(1);
   }

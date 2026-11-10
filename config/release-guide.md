@@ -1,4 +1,12 @@
-# TeamHero Release Process Guide
+# Orchivra Release Process Guide
+
+## Rename transition (November 2026)
+
+- The canonical repository is `sagiyaacoby/Orchivra`. GitHub redirects the previous repository URL after the repository rename.
+- The primary installer source is now `create-orchivra/`. Publish `create-orchivra` to npm before announcing `npx create-orchivra` as available; renaming source files does not publish an npm package.
+- `create-ai-hero/` is a legacy installer, retained for compatibility with its existing package name. Its generated application uses Orchivra branding.
+- Existing installation folders and user data can stay in place. The browser migrates notification preferences to the new keys.
+- Previously published npm packages, release archives, and third-party listings require separate updates; changing this repository does not rewrite them.
 
 Reference doc for every version release. Follow this before tagging.
 
@@ -84,9 +92,9 @@ Run through every item. Do not skip any.
 - [ ] Post-upgrade health check passes (check server logs on startup)
 
 ### npm templates (if changed)
-- [ ] `create-teamhero/` and `create-ai-hero/` templates updated to match current platform files
+- [ ] `create-orchivra/` and `create-ai-hero/` templates updated to match current platform files
 - [ ] Template version bumped
-- [ ] `npx create-teamhero` works end-to-end on a clean machine
+- [ ] `npx create-orchivra` works end-to-end on a clean machine
 
 ---
 
@@ -105,7 +113,7 @@ Everything that is a PLATFORM file:
 - `package.json` and `package-lock.json`
 - `launch.bat` and `launch.sh` - startup scripts
 - `.gitignore`
-- npm template packages (`create-teamhero/`, `create-ai-hero/`) if they exist
+- npm template packages (`create-orchivra/`, `create-ai-hero/`) if they exist
 
 ---
 

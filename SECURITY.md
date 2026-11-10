@@ -2,9 +2,9 @@
 
 ## Reporting a Vulnerability
 
-If you find a security vulnerability in TeamHero, please report it privately. Do not open a public issue.
+If you find a security vulnerability in Orchivra, please report it privately. Do not open a public issue.
 
-**Email:** security@myteamhero.com
+Use GitHub's [private vulnerability reporting](https://github.com/sagiyaacoby/Orchivra/security/advisories/new) when enabled. If it is unavailable, contact [the maintainer](https://github.com/sagiyaacoby) to arrange a private channel before sharing vulnerability details.
 
 Include:
 - Description of the vulnerability
@@ -21,7 +21,7 @@ Include:
 ## Scope
 
 The following are in scope:
-- TeamHero server (`server.js`) and API endpoints
+- Orchivra server (`server.js`) and API endpoints
 - Dashboard portal (`portal/`)
 - Agent execution and task system
 - Secrets vault and credential storage

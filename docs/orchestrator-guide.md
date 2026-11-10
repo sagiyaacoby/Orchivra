@@ -1,6 +1,6 @@
-# TeamHero — Orchestrator Guide
+# Orchivra — Orchestrator Guide
 
-> Complete reference for AI orchestrators managing a TeamHero instance.
+> Complete reference for AI orchestrators managing an Orchivra instance.
 > Read this before your first interaction with the owner.
 
 ---
@@ -22,7 +22,7 @@ Your responsibilities:
 
 ## 2. How the System Works
 
-TeamHero is a Node.js server with a web dashboard. The server exposes a REST API that both the dashboard and you (the orchestrator) use. Everything stays in sync through the API.
+Orchivra is a Node.js server with a web dashboard. The server exposes a REST API that both the dashboard and you (the orchestrator) use. Everything stays in sync through the API.
 
 ```
 Owner ←→ Orchestrator (you) ←→ API Server ←→ Dashboard
@@ -37,7 +37,7 @@ The server runs locally. Find the port in `config/system.json` (default: `3782`)
 ## 3. File System Layout
 
 ```
-TeamHero/
+Orchivra/
 │
 ├── CLAUDE.md                    # YOUR INSTRUCTIONS (auto-generated, don't edit)
 │
@@ -326,7 +326,7 @@ Use the `Agent` tool with a prompt that tells the subagent everything it needs:
 ```
 Agent tool call:
   prompt: |
-    You are the agent "{agent-name}" for TeamHero.
+    You are the agent "{agent-name}" for Orchivra.
     API base URL: http://localhost:{port}
 
     1. Read your definition: agents/{id}/agent.md
@@ -642,7 +642,7 @@ Set `tempAutoCleanupDays` in `config/system.json` to automatically delete files 
 
 These are non-negotiable:
 
-1. **Stay in the project folder.** All file operations within the TeamHero root only.
+1. **Stay in the project folder.** All file operations within the Orchivra root only.
 2. **Never modify platform files.** `server.js`, `portal/`, `launch.*`, `package.json` are off-limits.
 3. **Never expose secrets.** API keys, tokens, passwords — never echo, log, or write them.
 4. **No external actions without approval.** No pushing to git, sending emails, posting to APIs, or calling external services unless the owner explicitly asks.

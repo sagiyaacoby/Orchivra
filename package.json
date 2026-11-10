@@ -1,5 +1,5 @@
 {
-  "name": "teamhero",
+  "name": "orchivra",
   "version": "3.1.0",
   "description": "Multi-agent orchestration platform powered by Claude CLI",
   "main": "server.js",
@@ -10,11 +10,11 @@
   "author": "Sagi Yaacoby (https://github.com/sagiyaacoby)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sagiyaacoby/TeamHero.git"
+    "url": "https://github.com/sagiyaacoby/Orchivra.git"
   },
-  "homepage": "https://github.com/sagiyaacoby/TeamHero",
+  "homepage": "https://github.com/sagiyaacoby/Orchivra",
   "bugs": {
-    "url": "https://github.com/sagiyaacoby/TeamHero/issues"
+    "url": "https://github.com/sagiyaacoby/Orchivra/issues"
   },
   "keywords": [
     "ai-agents",

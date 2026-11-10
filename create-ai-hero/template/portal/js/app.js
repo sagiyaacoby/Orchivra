@@ -5053,10 +5053,10 @@
   // ── Help Section ─────────────────────────────────────
   var helpTopics = [
     {
-      title: 'How TeamHero Works',
+      title: 'How Orchivra Works',
       icon: '&#9733;',
-      content: '<h2>How TeamHero Works</h2>' +
-        '<p>TeamHero is an <strong>AI agent team management platform</strong>. You manage a team of AI agents the same way you' + q + 'd manage a team of people - by assigning work, reviewing results, and giving feedback.</p>' +
+      content: '<h2>How Orchivra Works</h2>' +
+        '<p>Orchivra is an <strong>AI agent team management platform</strong>. You manage a team of AI agents the same way you' + q + 'd manage a team of people - by assigning work, reviewing results, and giving feedback.</p>' +
         '<h3>The Three Layers</h3>' +
         '<ol>' +
         '<li><strong>You (the Owner)</strong> - You set goals, review deliverables, and provide feedback. You talk to the orchestrator through the Command Center.</li>' +
@@ -5271,7 +5271,7 @@
       title: 'Security & Secrets',
       icon: '&#128274;',
       content: '<h2>Security &amp; Secrets</h2>' +
-        '<p>TeamHero runs <strong>100% locally</strong> on your machine. No cloud, no external servers, no telemetry. Your data never leaves your computer unless you explicitly tell an agent to post or send something.</p>' +
+        '<p>Orchivra runs <strong>100% locally</strong> on your machine. No cloud, no external servers, no telemetry. Your data never leaves your computer unless you explicitly tell an agent to post or send something.</p>' +
         '<h3>Agent Sandbox - What You Need to Know</h3>' +
         '<p>Agents are instructed to stay within the project folder and follow security rules. However, <strong>this is enforced by rules, not by a technical sandbox</strong>. Agents run as Claude Code subprocesses with the same OS permissions as your user account. In theory, an agent could access files or run commands outside the project if it ignored its instructions.</p>' +
         '<p>The layers of protection:</p>' +
@@ -5283,14 +5283,14 @@
         '</ul>' +
         '<p><strong>Recommendation:</strong> If your machine has sensitive files outside the project, use <strong>supervised mode</strong>. Use autonomous mode only when you trust the workflow and have reviewed your agent rules. You can switch modes anytime in Settings.</p>' +
         '<h3>Two Storage Systems</h3>' +
-        '<p>TeamHero has two separate systems for storing sensitive information:</p>' +
+        '<p>Orchivra has two separate systems for storing sensitive information:</p>' +
         '<ul>' +
         '<li><strong>Secrets Vault</strong> - For <strong>API keys, tokens, and service credentials</strong>. Encrypted with AES-256-GCM. Injected as environment variables (e.g. <code>$TRELLO_API_KEY</code>). Managed in Settings &gt; Secrets &amp; API Keys.</li>' +
         '<li><strong>Credentials Manager</strong> - For <strong>website login credentials</strong> (service name, username, password). Injected as paired environment variables: <code>{SERVICE}_USERNAME</code> and <code>{SERVICE}_PASSWORD</code>. Managed in Settings &gt; Credentials. Use this for platform logins agents need for browser-based tasks.</li>' +
         '</ul>' +
         '<p>Both are stored locally and encrypted. Neither uses the OS keychain.</p>' +
         '<h3>Secret Storage (Vault)</h3>' +
-        '<p>API keys and tokens are stored in a single <strong>encrypted file</strong>: <code>config/secrets.enc</code>. This is TeamHero' + q + 's own vault - it does <strong>not</strong> use the OS keychain (Windows Credential Manager, macOS Keychain, etc.). The file is self-contained and portable with your project.</p>' +
+        '<p>API keys and tokens are stored in a single <strong>encrypted file</strong>: <code>config/secrets.enc</code>. This is Orchivra' + q + 's own vault - it does <strong>not</strong> use the OS keychain (Windows Credential Manager, macOS Keychain, etc.). The file is self-contained and portable with your project.</p>' +
         '<h3>How the Vault Works</h3>' +
         '<p>The encrypted file structure: <code>[32-byte salt] [12-byte IV] [16-byte auth tag] [ciphertext]</code></p>' +
         '<ul>' +
@@ -5307,7 +5307,7 @@
         '<li><strong>AI agents can use your keys.</strong> When secrets are unlocked, agents receive them as environment variables. A misconfigured or poorly prompted agent could call an API in ways you did not intend. Always review agent rules and use supervised mode for sensitive operations.</li>' +
         '<li><strong>The encrypted file is only as strong as your password.</strong> A weak master password can be brute-forced offline. Use a strong, unique password.</li>' +
         '<li><strong>No access control between agents.</strong> All unlocked secrets are available to all agents. You cannot restrict specific keys to specific agents. If an agent should not have access to a key, do not store it in the vault while that agent is active.</li>' +
-        '<li><strong>Local network exposure:</strong> The dashboard runs on localhost. If your machine is on a shared network and the port is accessible, others could potentially reach the dashboard. TeamHero does not have authentication on the web UI.</li>' +
+        '<li><strong>Local network exposure:</strong> The dashboard runs on localhost. If your machine is on a shared network and the port is accessible, others could potentially reach the dashboard. Orchivra does not have authentication on the web UI.</li>' +
         '</ul>' +
         '<h3>Secret Injection</h3>' +
         '<p>When the vault is unlocked, secrets are injected as <strong>environment variables</strong> into agent sessions. Agents can use them (e.g. <code>$TRELLO_API_KEY</code>) but never see the actual values in plain text.</p>' +
@@ -5357,7 +5357,7 @@
         '<h3>Updates &amp; Self-Healing</h3>' +
         '<p>Check for platform updates from GitHub. Updates only affect platform files - your agents, tasks, and data are never touched. The upgrade system includes <strong>self-healing</strong>: if critical bootstrap files (launch scripts, package.json) are missing or corrupted, the updater detects and restores them automatically.</p>' +
         '<h3>CLI Installer</h3>' +
-        '<p>When installing TeamHero via the CLI, the installer prompts you for a <strong>folder name</strong> for your team. This becomes the project directory where all your team data lives.</p>' +
+        '<p>When installing Orchivra via the CLI, the installer prompts you for a <strong>folder name</strong> for your team. This becomes the project directory where all your team data lives.</p>' +
         '<button class="help-go-link" onclick="App.navigate(\'settings\')">Go to Settings &#8594;</button>'
     }
   ];

@@ -21,14 +21,14 @@ Be respectful. Be constructive. Help each other build something great.
 
 ## Scope
 
-This applies to all project spaces - issues, pull requests, discussions, and any other communication channel associated with TeamHero.
+This applies to all project spaces - issues, pull requests, discussions, and any other communication channel associated with Orchivra.
 
 ## Enforcement
 
-If someone violates this code of conduct, report it to the project maintainers at conduct@myteamhero.com. We'll review the situation and respond appropriately. Reports are kept confidential.
+If someone violates this code of conduct, contact [the project maintainer](https://github.com/sagiyaacoby) to arrange a private reporting channel. Do not post confidential details in public issues. We'll review the situation and respond appropriately. Reports are kept confidential.
 
 Consequences range from a warning to a permanent ban, depending on severity and history.
 
 ## Attribution
 
-Inspired by the [Contributor Covenant](https://www.contributor-covenant.org/), adapted for TeamHero.
+Inspired by the [Contributor Covenant](https://www.contributor-covenant.org/), adapted for Orchivra.

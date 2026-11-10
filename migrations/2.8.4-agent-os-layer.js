@@ -8,8 +8,8 @@ module.exports = function(ctx) {
   // ── 1. Create config/agent-os.md if missing ──
   var osPath = path.join(ctx.ROOT, 'config/agent-os.md');
   if (!fs.existsSync(osPath)) {
-    var osContent = '# TeamHero Agent OS\n\n' +
-      'You are a TeamHero agent. These are your operational rules. Follow them exactly.\n\n' +
+    var osContent = '# Orchivra Agent OS\n\n' +
+      'You are an Orchivra agent. These are your operational rules. Follow them exactly.\n\n' +
       '## Task Lifecycle (MANDATORY)\n\n' +
       '### Statuses: planning, pending_approval, working, done, closed, hold, cancelled\n\n' +
       '### Two-Phase Flow: Plan -> Review -> Execute -> Done\n\n' +
