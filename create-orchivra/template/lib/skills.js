@@ -1,7 +1,9 @@
 // ── Skills Management ────────────────────────────────────
 // Extracted from server.js - zero behavior change
+// Extended with MCP Registry search, user skill catalog, and install/uninstall
 
 const { execSync, spawn } = require('child_process');
+const https = require('https');
 
 // Check if a command-line tool is available on the system
 function commandExists(cmd) {
@@ -17,19 +19,26 @@ function commandExists(cmd) {
 // Known package managers for installing system dependencies
 function getInstallCommand(dep) {
   var p = process.platform;
+  var isObj = typeof dep === 'object';
   if (p === 'win32') {
-    if (commandExists('winget')) return { cmd: 'winget', args: ['install', '--id', dep.winget || dep, '-e', '--accept-source-agreements', '--accept-package-agreements'] };
-    if (commandExists('choco')) return { cmd: 'choco', args: ['install', dep.choco || dep, '-y'] };
+    var winPkg = isObj ? dep.winget : dep;
+    var chocoPkg = isObj ? dep.choco : dep;
+    if (winPkg && commandExists('winget')) return { cmd: 'winget', args: ['install', '--id', winPkg, '-e', '--accept-source-agreements', '--accept-package-agreements'] };
+    if (chocoPkg && commandExists('choco')) return { cmd: 'choco', args: ['install', chocoPkg, '-y'] };
     return null;
   }
   if (p === 'darwin') {
-    if (commandExists('brew')) return { cmd: 'brew', args: ['install', dep.brew || dep] };
+    var brewPkg = isObj ? dep.brew : dep;
+    if (brewPkg && commandExists('brew')) return { cmd: 'brew', args: ['install', brewPkg] };
     return null;
   }
   // Linux
-  if (commandExists('apt-get')) return { cmd: 'sudo', args: ['apt-get', 'install', '-y', dep.apt || dep] };
-  if (commandExists('yum')) return { cmd: 'sudo', args: ['yum', 'install', '-y', dep.yum || dep] };
-  if (commandExists('pacman')) return { cmd: 'sudo', args: ['pacman', '-S', '--noconfirm', dep.pacman || dep] };
+  var aptPkg = isObj ? dep.apt : dep;
+  var yumPkg = isObj ? dep.yum : dep;
+  var pacPkg = isObj ? dep.pacman : dep;
+  if (aptPkg && commandExists('apt-get')) return { cmd: 'sudo', args: ['apt-get', 'install', '-y', aptPkg] };
+  if (yumPkg && commandExists('yum')) return { cmd: 'sudo', args: ['yum', 'install', '-y', yumPkg] };
+  if (pacPkg && commandExists('pacman')) return { cmd: 'sudo', args: ['pacman', '-S', '--noconfirm', pacPkg] };
   return null;
 }
 
@@ -38,7 +47,8 @@ var SYSTEM_DEP_MAP = {
   'ffmpeg': { winget: 'Gyan.FFmpeg', choco: 'ffmpeg', brew: 'ffmpeg', apt: 'ffmpeg', yum: 'ffmpeg', pacman: 'ffmpeg' },
   'python': { winget: 'Python.Python.3.12', choco: 'python3', brew: 'python3', apt: 'python3', yum: 'python3', pacman: 'python' },
   'git': { winget: 'Git.Git', choco: 'git', brew: 'git', apt: 'git', yum: 'git', pacman: 'git' },
-  'gh': { winget: 'GitHub.cli', choco: 'gh', brew: 'gh', apt: 'gh', yum: 'gh', pacman: 'github-cli' }
+  'gh': { winget: 'GitHub.cli', choco: 'gh', brew: 'gh', apt: 'gh', yum: 'gh', pacman: 'github-cli' },
+  'vercel': { winget: 'Vercel.CLI', choco: 'vercel', brew: 'vercel-cli', apt: null, yum: null, pacman: null, npmGlobal: 'vercel' }
 };
 
 // Attempt to install a system dependency, returns { success, output }
@@ -46,6 +56,11 @@ function installSystemDep(depName) {
   var depInfo = SYSTEM_DEP_MAP[depName] || depName;
   var installCmd = getInstallCommand(depInfo);
   if (!installCmd) {
+    // Fallback: try npm global install if depInfo has npmGlobal or as last resort
+    var npmPkg = (typeof depInfo === 'object' && depInfo.npmGlobal) ? depInfo.npmGlobal : null;
+    if (npmPkg && commandExists('npm')) {
+      return tryNpmGlobalInstall(depName, npmPkg);
+    }
     return { success: false, output: 'No package manager found to install "' + depName + '". Please install it manually.' };
   }
   try {
@@ -55,10 +70,72 @@ function installSystemDep(depName) {
     if (commandExists(depName)) {
       return { success: true, output: 'Installed ' + depName + ' successfully.' };
     }
+    // System install ran but command not found - try npm global as fallback
+    var npmPkg2 = (typeof depInfo === 'object' && depInfo.npmGlobal) ? depInfo.npmGlobal : null;
+    if (npmPkg2 && commandExists('npm')) {
+      return tryNpmGlobalInstall(depName, npmPkg2);
+    }
     return { success: false, output: 'Install command ran but "' + depName + '" still not found in PATH. Output: ' + output };
   } catch(e) {
+    // System install failed - try npm global as fallback
+    var npmPkg3 = (typeof depInfo === 'object' && depInfo.npmGlobal) ? depInfo.npmGlobal : null;
+    if (npmPkg3 && commandExists('npm')) {
+      return tryNpmGlobalInstall(depName, npmPkg3);
+    }
     return { success: false, output: 'Failed to install "' + depName + '": ' + (e.stderr || e.message) };
   }
+}
+
+// Try installing a dependency via npm install -g
+function tryNpmGlobalInstall(depName, npmPkg) {
+  try {
+    var output = execSync('npm install -g ' + npmPkg,
+      { timeout: 120000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    if (commandExists(depName)) {
+      return { success: true, output: 'Installed ' + depName + ' via npm globally.' };
+    }
+    return { success: false, output: 'npm install -g ran but "' + depName + '" still not found in PATH. Output: ' + output };
+  } catch(e) {
+    return { success: false, output: 'npm install -g ' + npmPkg + ' failed: ' + (e.stderr || e.message) };
+  }
+}
+
+// ── Catalog helpers ──────────────────────────────────────
+
+/**
+ * Load both system and user catalogs merged together
+ */
+function loadAllCatalogs(ctx) {
+  var systemCatalog = ctx.readJSON(ctx.path.join(ctx.ROOT, 'config/skills-catalog.json')) || [];
+  var userCatalog = ctx.readJSON(ctx.path.join(ctx.ROOT, 'data/skills/user-catalog.json')) || [];
+  // Tag system skills
+  systemCatalog = systemCatalog.map(function(s) {
+    return Object.assign({}, s, { source: s.source || 'system' });
+  });
+  // User skills already have source set
+  return systemCatalog.concat(userCatalog);
+}
+
+/**
+ * Find a skill by ID across both catalogs
+ */
+function findSkillById(ctx, skillId) {
+  var all = loadAllCatalogs(ctx);
+  return all.find(function(s) { return s.id === skillId; }) || null;
+}
+
+/**
+ * Load user catalog
+ */
+function loadUserCatalog(ctx) {
+  return ctx.readJSON(ctx.path.join(ctx.ROOT, 'data/skills/user-catalog.json')) || [];
+}
+
+/**
+ * Save user catalog
+ */
+function saveUserCatalog(ctx, catalog) {
+  ctx.writeJSON(ctx.path.join(ctx.ROOT, 'data/skills/user-catalog.json'), catalog);
 }
 
 /**
@@ -66,7 +143,7 @@ function installSystemDep(depName) {
  * @param {object} ctx - { ROOT, readJSON, path, fs }
  */
 function handleGetSkills(ctx) {
-  var catalog = ctx.readJSON(ctx.path.join(ctx.ROOT, 'config/skills-catalog.json')) || [];
+  var catalog = loadAllCatalogs(ctx);
   var enabled = ctx.readJSON(ctx.path.join(ctx.ROOT, 'data/skills/enabled.json')) || {};
   var skills = catalog.map(function(s) {
     var deps = (s.systemDeps || []).map(function(dep) {
@@ -110,9 +187,8 @@ function handleSkillSettings(ctx, skillId, body) {
   }
   ctx.writeJSON(settingsPath, existing);
 
-  // Update .mcp.json env vars with actual values
-  var catalog = ctx.readJSON(ctx.path.join(ctx.ROOT, 'config/skills-catalog.json')) || [];
-  var skill = catalog.find(function(s) { return s.id === skillId; });
+  // Update .mcp.json env vars with actual values - search both catalogs
+  var skill = findSkillById(ctx, skillId);
   if (skill && skill.type === 'mcp' && skill.mcpConfig && skill.mcpConfig.env) {
     var mcpPath = ctx.path.join(ctx.ROOT, '.mcp.json');
     var mcpData = ctx.readJSON(mcpPath) || { mcpServers: {} };
@@ -139,8 +215,8 @@ function handleSkillSettings(ctx, skillId, body) {
  * @param {string} action - 'enable' or 'disable'
  */
 async function handleSkillToggle(ctx, skillId, action) {
-  var catalog = ctx.readJSON(ctx.path.join(ctx.ROOT, 'config/skills-catalog.json')) || [];
-  var skill = catalog.find(function(s) { return s.id === skillId; });
+  // Search both system and user catalogs
+  var skill = findSkillById(ctx, skillId);
   if (!skill) return { error: 'Skill not found', status: 404 };
 
   var enabledPath = ctx.path.join(ctx.ROOT, 'data/skills/enabled.json');
@@ -295,6 +371,318 @@ async function handleSkillToggle(ctx, skillId, action) {
   }
 }
 
+// ── MCP Registry Search ──────────────────────────────────
+
+/**
+ * HTTPS GET helper with timeout
+ */
+function httpsGetJSON(url, timeoutMs) {
+  return new Promise(function(resolve, reject) {
+    var parsed = new URL(url);
+    var opts = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      headers: { 'User-Agent': 'Orchivra/1.0', 'Accept': 'application/json' },
+      timeout: timeoutMs || 10000
+    };
+    var req = https.get(opts, function(res) {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return httpsGetJSON(res.headers.location, timeoutMs).then(resolve, reject);
+      }
+      var data = [];
+      res.on('data', function(ch) { data.push(ch); });
+      res.on('end', function() {
+        var body = Buffer.concat(data).toString('utf8');
+        if (res.statusCode !== 200) {
+          return reject(new Error('HTTP ' + res.statusCode + ': ' + body.slice(0, 200)));
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch(e) {
+          reject(new Error('Invalid JSON response'));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', function() { req.destroy(); reject(new Error('Request timed out')); });
+  });
+}
+
+/**
+ * Normalize a registry server entry into our format
+ */
+function normalizeRegistryEntry(server) {
+  var npmPkg = null;
+  var transport = 'stdio';
+
+  // Extract npm package from packages array
+  if (server.packages && server.packages.length) {
+    var npmEntry = server.packages.find(function(p) { return p.registryType === 'npm'; });
+    if (npmEntry) npmPkg = npmEntry.identifier || npmEntry.name;
+  }
+
+  // Extract transport from remotes
+  if (server.remotes && server.remotes.length) {
+    transport = server.remotes[0].type || 'stdio';
+  }
+
+  return {
+    id: (server.name || '').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase(),
+    registryName: server.name || '',
+    name: server.title || server.name || '',
+    description: server.description || '',
+    version: server.version || '',
+    source: 'registry',
+    repoUrl: (server.repository && server.repository.url) || '',
+    websiteUrl: server.websiteUrl || '',
+    npmPackage: npmPkg,
+    transport: transport,
+    icons: server.icons || [],
+    publishedAt: (server._meta && server._meta.publishedAt) || '',
+    updatedAt: (server._meta && server._meta.updatedAt) || ''
+  };
+}
+
+/**
+ * Normalize an npm search result into our format
+ */
+function normalizeNpmEntry(pkg) {
+  var obj = pkg.package || pkg;
+  return {
+    id: (obj.name || '').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase(),
+    registryName: obj.name || '',
+    name: obj.name || '',
+    description: obj.description || '',
+    version: obj.version || '',
+    source: 'npm',
+    repoUrl: (obj.links && obj.links.repository) || '',
+    websiteUrl: (obj.links && obj.links.homepage) || '',
+    npmPackage: obj.name || '',
+    transport: 'stdio',
+    icons: [],
+    publishedAt: obj.date || '',
+    updatedAt: obj.date || ''
+  };
+}
+
+/**
+ * Handle GET /api/skills/search?q=...&source=registry|npm&cursor=...
+ * @param {object} ctx - { ROOT, readJSON, path, fs }
+ * @param {string} query - search term
+ * @param {string} source - 'registry' or 'npm' (default: 'registry')
+ * @param {string} cursor - pagination cursor (registry) or offset (npm)
+ */
+async function handleSkillSearch(ctx, query, source, cursor) {
+  if (!query || !query.trim()) {
+    return { results: [], nextCursor: null, total: 0 };
+  }
+
+  source = source || 'registry';
+
+  try {
+    if (source === 'npm') {
+      // npm registry search
+      var offset = parseInt(cursor) || 0;
+      var npmUrl = 'https://registry.npmjs.org/-/v1/search?text=mcp-server+' +
+        encodeURIComponent(query) + '&size=20&from=' + offset;
+      var npmData = await httpsGetJSON(npmUrl, 15000);
+      var npmResults = (npmData.objects || []).map(normalizeNpmEntry);
+      var npmTotal = npmData.total || 0;
+      var nextOffset = offset + 20 < npmTotal ? String(offset + 20) : null;
+      return { results: npmResults, nextCursor: nextOffset, total: npmTotal };
+    } else {
+      // Official MCP Registry search
+      var regUrl = 'https://registry.modelcontextprotocol.io/v0/servers?search=' +
+        encodeURIComponent(query) + '&limit=20&version=latest';
+      if (cursor) regUrl += '&cursor=' + encodeURIComponent(cursor);
+      var regData = await httpsGetJSON(regUrl, 15000);
+      var servers = regData.servers || regData || [];
+      if (!Array.isArray(servers)) servers = [];
+      var regResults = servers.map(normalizeRegistryEntry);
+      var nextCursor = (regData.metadata && regData.metadata.nextCursor) || null;
+      var total = (regData.metadata && regData.metadata.total) || regResults.length;
+      return { results: regResults, nextCursor: nextCursor, total: total };
+    }
+  } catch(err) {
+    return { results: [], nextCursor: null, total: 0, error: err.message };
+  }
+}
+
+// ── User Skill Install/Uninstall ─────────────────────────
+
+/**
+ * Generate a safe skill ID from registry data
+ */
+function generateSkillId(registryName, npmPackage) {
+  var base = npmPackage || registryName || 'skill';
+  // Remove scope prefix (@scope/)
+  base = base.replace(/^@[^/]+\//, '');
+  // Sanitize
+  return base.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase().slice(0, 50);
+}
+
+/**
+ * Handle POST /api/skills/user/install
+ * @param {object} ctx - { ROOT, readJSON, writeJSON, path, fs, broadcast }
+ * @param {object} body - skill data from search results
+ */
+async function handleUserSkillInstall(ctx, body) {
+  if (!body || (!body.npmPackage && !body.repoUrl)) {
+    return { error: 'Missing npmPackage or repoUrl', status: 400 };
+  }
+
+  var skillId = generateSkillId(body.registryName || body.name, body.npmPackage);
+
+  // Check for duplicates across both catalogs
+  var existing = findSkillById(ctx, skillId);
+  if (existing) {
+    return { error: 'Skill "' + skillId + '" already exists', status: 409 };
+  }
+
+  // Build the skill entry
+  var skillEntry = {
+    id: skillId,
+    name: body.name || skillId,
+    description: body.description || '',
+    icon: '',
+    type: 'mcp',
+    source: body.source || 'registry',
+    sourceId: body.registryName || body.npmPackage || '',
+    userInstalled: true,
+    version: body.version || '',
+    repoUrl: body.repoUrl || '',
+    installedAt: new Date().toISOString(),
+    packages: [],
+    settings: [],
+    mcpConfig: null
+  };
+
+  // Determine install method
+  if (body.npmPackage) {
+    // npx-based install - no npm install needed, npx handles it
+    skillEntry.mcpConfig = {
+      command: 'npx',
+      args: ['-y', body.npmPackage]
+    };
+  } else if (body.repoUrl) {
+    // Git-based install
+    skillEntry.gitRepo = body.repoUrl;
+    skillEntry.buildCmd = 'npm install && npm run build';
+    var skillDir = ctx.path.join(ctx.ROOT, 'data/skills/user', skillId);
+    ctx.fs.mkdirSync(skillDir, { recursive: true });
+
+    // Clone
+    if (!ctx.fs.existsSync(ctx.path.join(skillDir, '.git'))) {
+      var cloneResult = await new Promise(function(resolve) {
+        var proc = spawn('git', ['clone', body.repoUrl, '.'], { cwd: skillDir, shell: true, timeout: 120000 });
+        var output = '';
+        proc.stdout.on('data', function(ch) { output += ch; });
+        proc.stderr.on('data', function(ch) { output += ch; });
+        proc.on('close', function(code) { resolve({ success: code === 0, output: output }); });
+        proc.on('error', function(err) { resolve({ success: false, output: err.message }); });
+      });
+      if (!cloneResult.success) {
+        // Clean up
+        try { ctx.fs.rmSync(skillDir, { recursive: true, force: true }); } catch(e) {}
+        return { ok: false, error: 'Git clone failed.', details: cloneResult.output, status: 500 };
+      }
+    }
+
+    // Build
+    var buildResult = await new Promise(function(resolve) {
+      var proc = spawn('npm', ['install'], { cwd: skillDir, shell: true, timeout: 180000 });
+      var output = '';
+      proc.stdout.on('data', function(ch) { output += ch; });
+      proc.stderr.on('data', function(ch) { output += ch; });
+      proc.on('close', function(code) { resolve({ success: code === 0, output: output }); });
+      proc.on('error', function(err) { resolve({ success: false, output: err.message }); });
+    });
+    if (!buildResult.success) {
+      return { ok: false, error: 'npm install failed for cloned repo.', details: buildResult.output, status: 500 };
+    }
+
+    // Try to detect main entry point
+    var clonedPkg = ctx.readJSON(ctx.path.join(skillDir, 'package.json'));
+    var mainFile = (clonedPkg && (clonedPkg.main || clonedPkg.bin)) || 'index.js';
+    if (typeof mainFile === 'object') mainFile = Object.values(mainFile)[0] || 'index.js';
+    var fullPath = ctx.path.join(skillDir, mainFile).replace(/\\/g, '/');
+
+    skillEntry.mcpConfig = {
+      command: 'node',
+      args: [fullPath]
+    };
+  }
+
+  // Save to user catalog
+  var userCatalog = loadUserCatalog(ctx);
+  userCatalog.push(skillEntry);
+  saveUserCatalog(ctx, userCatalog);
+
+  // Write to .mcp.json
+  if (skillEntry.mcpConfig) {
+    var mcpPath = ctx.path.join(ctx.ROOT, '.mcp.json');
+    var mcpData = ctx.readJSON(mcpPath) || { mcpServers: {} };
+    mcpData.mcpServers[skillId] = skillEntry.mcpConfig;
+    ctx.writeJSON(mcpPath, mcpData);
+  }
+
+  // Set enabled
+  var enabledPath = ctx.path.join(ctx.ROOT, 'data/skills/enabled.json');
+  var enabled = ctx.readJSON(enabledPath) || {};
+  enabled[skillId] = true;
+  ctx.writeJSON(enabledPath, enabled);
+
+  ctx.broadcast('skills');
+  return { ok: true, skill: skillEntry };
+}
+
+/**
+ * Handle DELETE /api/skills/user/:id
+ * @param {object} ctx - { ROOT, readJSON, writeJSON, path, fs, broadcast }
+ * @param {string} skillId
+ */
+function handleUserSkillUninstall(ctx, skillId) {
+  var userCatalog = loadUserCatalog(ctx);
+  var skillIndex = userCatalog.findIndex(function(s) { return s.id === skillId; });
+
+  if (skillIndex === -1) {
+    return { error: 'User skill not found: ' + skillId, status: 404 };
+  }
+
+  var skill = userCatalog[skillIndex];
+
+  // Remove from user catalog
+  userCatalog.splice(skillIndex, 1);
+  saveUserCatalog(ctx, userCatalog);
+
+  // Remove from .mcp.json
+  var mcpPath = ctx.path.join(ctx.ROOT, '.mcp.json');
+  var mcpData = ctx.readJSON(mcpPath) || { mcpServers: {} };
+  delete mcpData.mcpServers[skillId];
+  ctx.writeJSON(mcpPath, mcpData);
+
+  // Remove from enabled.json
+  var enabledPath = ctx.path.join(ctx.ROOT, 'data/skills/enabled.json');
+  var enabled = ctx.readJSON(enabledPath) || {};
+  delete enabled[skillId];
+  ctx.writeJSON(enabledPath, enabled);
+
+  // Clean up skill directory if it exists
+  var skillDir = ctx.path.join(ctx.ROOT, 'data/skills/user', skillId);
+  if (ctx.fs.existsSync(skillDir)) {
+    try { ctx.fs.rmSync(skillDir, { recursive: true, force: true }); } catch(e) {}
+  }
+
+  // Clean up settings file
+  var settingsPath = ctx.path.join(ctx.ROOT, 'data/skills', skillId + '-settings.json');
+  if (ctx.fs.existsSync(settingsPath)) {
+    try { ctx.fs.unlinkSync(settingsPath); } catch(e) {}
+  }
+
+  ctx.broadcast('skills');
+  return { ok: true };
+}
+
 /**
  * Handle screen recorder control
  * @param {object} ctx - { ROOT, path, fs }
@@ -384,7 +772,7 @@ function getGitHubStatus(ctx) {
  * @returns {string} Markdown context for enabled skills
  */
 function getEnabledSkillContexts(ctx) {
-  var catalog = ctx.readJSON(ctx.path.join(ctx.ROOT, 'config/skills-catalog.json')) || [];
+  var catalog = loadAllCatalogs(ctx);
   var enabled = ctx.readJSON(ctx.path.join(ctx.ROOT, 'data/skills/enabled.json')) || {};
   var snippets = [];
   catalog.forEach(function(s) {
@@ -408,6 +796,9 @@ module.exports = {
   handleGetSkills,
   handleSkillSettings,
   handleSkillToggle,
+  handleSkillSearch,
+  handleUserSkillInstall,
+  handleUserSkillUninstall,
   handleScreenRecorder,
   getGitHubStatus,
   getEnabledSkillContexts,

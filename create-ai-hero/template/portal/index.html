@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Orchivra</title>
   <link rel="stylesheet" href="css/style.css">
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script src="js/vendor/marked.min.js"></script>
+  <script src="js/vendor/purify.min.js"></script>
+  <link rel="stylesheet" href="css/vendor/xterm.min.css">
+  <script src="js/vendor/xterm.min.js"></script>
+  <script src="js/vendor/addon-fit.min.js"></script>
+  <script src="js/vendor/addon-web-links.min.js"></script>
+  <script src="js/vendor/qrcode.min.js"></script>
 </head>
 <body>
 
@@ -20,126 +22,205 @@
         <div class="wizard-progress-bar" id="wizard-progress-bar"></div>
       </div>
 
-      <!-- Step 1: Welcome -->
+      <!-- Step 1: Disclaimer -->
       <div class="wizard-step active" data-step="1">
-        <div class="wizard-icon">&#9881;</div>
-        <h1>Welcome to Your Agent Team</h1>
-        <p class="wizard-desc">Set up your multi-agent orchestration system in just a few steps. You'll create your profile, name your team, and configure your first agent.</p>
+        <div class="wizard-icon">&#9888;</div>
+        <h1>Before You Begin</h1>
+        <p class="wizard-desc">Orchivra uses Claude AI to power intelligent agents that can perform actions on your behalf - including running commands, browsing the web, accessing files, and interacting with external services.</p>
+        <p class="wizard-desc"><strong>Your Claude subscription powers this tool.</strong> Your interactions with Claude through Orchivra are governed by <a href="https://www.anthropic.com/legal/consumer-terms" target="_blank" style="color:var(--accent)">Anthropic's Terms of Service</a>. Orchivra is not affiliated with Anthropic.</p>
+        <p class="wizard-desc">AI agents can and will make mistakes. They may misinterpret instructions, take unintended actions, or produce incorrect results.</p>
+        <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:16px;margin:16px 0;font-size:13px;line-height:1.7;color:var(--text-muted);text-align:left;">
+          <strong style="color:var(--text);">Before you proceed:</strong>
+          <ul style="margin:8px 0 0 0;padding-left:20px;">
+            <li>Do not give agents access to sensitive systems, credentials, or data unless you understand and accept the risks</li>
+            <li>Review agent plans before approving execution</li>
+            <li>Maintain backups of any data agents can access</li>
+            <li>You are responsible for all actions your agents take</li>
+          </ul>
+        </div>
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13px;line-height:1.6;text-align:left;margin:16px 0;padding:12px 16px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;">
+          <input type="checkbox" id="wiz-disclaimer-check" onchange="document.getElementById('wiz-disclaimer-btn').disabled=!this.checked" style="margin-top:4px;flex-shrink:0;">
+          <span>I understand that AI agents can make mistakes and I accept full responsibility for supervising their actions. I agree to the <a href="#" onclick="event.preventDefault();App.navigate('terms');" style="color:var(--accent)">Terms of Use</a>.</span>
+        </label>
         <div class="wizard-actions">
-          <button class="btn btn-primary btn-lg" onclick="App.wizardNext()">Get Started</button>
+          <button class="btn btn-primary btn-lg" id="wiz-disclaimer-btn" disabled onclick="App.wizardNext()">Continue</button>
         </div>
       </div>
 
-      <!-- Step 2: Profile -->
+      <!-- Step 2: Connect Claude -->
       <div class="wizard-step" data-step="2">
-        <h2>Your Profile</h2>
-        <p class="wizard-desc">Tell your agents about yourself so they can tailor their work to your needs.</p>
+        <div class="wizard-icon">&#9889;</div>
+        <h1>Connect Your AI Engine</h1>
+        <p class="wizard-desc">Orchivra uses Claude to power your agent team. Choose how to connect:</p>
+        <div class="wiz-cards-row">
+          <div class="wiz-card" id="wiz-claude-pro-card">
+            <div class="wiz-card-badge">Recommended</div>
+            <h3>Pro/Max Account</h3>
+            <p class="wiz-card-desc">Best for individuals and small teams. Fixed monthly cost, no surprise bills.</p>
+            <p class="wiz-card-desc">Uses your existing Claude Pro ($20/mo) or Max ($100/mo) subscription.</p>
+            <button class="btn btn-primary" onclick="App.wizardCheckClaude()" id="wiz-claude-check-btn">Connect Pro/Max</button>
+            <div id="wiz-claude-status" class="wiz-claude-status"></div>
+          </div>
+          <div class="wiz-card" id="wiz-claude-api-card">
+            <h3>API Token</h3>
+            <p class="wiz-card-desc">Pay per use. Best for high-volume or enterprise use.</p>
+            <p class="wiz-card-desc">Enter your Anthropic API key:</p>
+            <input type="password" id="wiz-api-key" placeholder="sk-ant-..." class="wiz-input">
+            <button class="btn btn-primary" onclick="App.wizardSaveApiKey()" style="margin-top:8px;">Save & Verify</button>
+            <div id="wiz-api-status" class="wiz-claude-status"></div>
+            <a href="https://console.anthropic.com" target="_blank" class="wiz-link">console.anthropic.com</a>
+          </div>
+        </div>
+        <div class="wizard-actions">
+          <button class="btn btn-secondary" onclick="App.wizardBack()">Back</button>
+          <button class="btn btn-primary" onclick="App.wizardNext()">Next</button>
+        </div>
+        <div class="wizard-skip">
+          <a href="#" onclick="App.wizardNext(); return false;">Skip - I'll set this up later</a>
+        </div>
+      </div>
+
+      <!-- Step 3: Team Type -->
+      <div class="wizard-step" data-step="3">
+        <div class="wizard-icon">&#9881;</div>
+        <h1>What will your team do?</h1>
+        <p class="wizard-desc">Pick a template to get started fast. You can customize everything later.</p>
+        <div class="wiz-type-grid" id="wiz-type-grid">
+          <div class="wiz-type-card" data-type="coding" onclick="App.wizardSelectType('coding')">
+            <div class="wiz-type-icon">&lt;/&gt;</div>
+            <div class="wiz-type-name">Coding</div>
+            <div class="wiz-type-desc">Build software with AI agents</div>
+          </div>
+          <div class="wiz-type-card" data-type="marketing" onclick="App.wizardSelectType('marketing')">
+            <div class="wiz-type-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l18-5v12L3 13v-2z"/><line x1="11.6" y1="16.8" x2="10" y2="22"/></svg></div>
+            <div class="wiz-type-name">Marketing</div>
+            <div class="wiz-type-desc">Content, campaigns, audience growth</div>
+          </div>
+          <div class="wiz-type-card" data-type="sales" onclick="App.wizardSelectType('sales')">
+            <div class="wiz-type-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></div>
+            <div class="wiz-type-name">Sales</div>
+            <div class="wiz-type-desc">Prospect, outreach, close deals</div>
+          </div>
+          <div class="wiz-type-card" data-type="research" onclick="App.wizardSelectType('research')">
+            <div class="wiz-type-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+            <div class="wiz-type-name">Research</div>
+            <div class="wiz-type-desc">Analyze markets, competitors, trends</div>
+          </div>
+          <div class="wiz-type-card" data-type="operations" onclick="App.wizardSelectType('operations')">
+            <div class="wiz-type-icon">&#9881;</div>
+            <div class="wiz-type-name">Operations</div>
+            <div class="wiz-type-desc">Automate workflows, manage processes</div>
+          </div>
+          <div class="wiz-type-card" data-type="custom" onclick="App.wizardSelectType('custom')">
+            <div class="wiz-type-icon">+</div>
+            <div class="wiz-type-name">Custom</div>
+            <div class="wiz-type-desc">Build your own team from scratch</div>
+          </div>
+        </div>
+        <div class="wizard-actions">
+          <button class="btn btn-secondary" onclick="App.wizardBack()">Back</button>
+          <button class="btn btn-primary" onclick="App.wizardNext()">Next</button>
+        </div>
+        <div class="wizard-skip">
+          <a href="#" onclick="App.wizardSelectType('custom'); App.wizardNext(); return false;">Skip - I'll build my own team</a>
+        </div>
+      </div>
+
+      <!-- Step 4: About You -->
+      <div class="wizard-step" data-step="4">
+        <div class="wizard-icon">&#128100;</div>
+        <h1>Tell us about yourself</h1>
+        <p class="wizard-desc">Your agents use this to tailor their work.</p>
         <div class="form-grid">
-          <div class="form-group">
+          <div class="form-group full-width">
             <label>Name</label>
             <input type="text" id="wiz-name" placeholder="Your name">
           </div>
-          <div class="form-group">
-            <label>Role</label>
-            <input type="text" id="wiz-role" placeholder="e.g. Founder, Content Manager, Developer">
+          <div class="form-group full-width">
+            <label>Your role</label>
+            <select id="wiz-role" class="wiz-select">
+              <option value="">Select a role...</option>
+              <option value="Founder">Founder</option>
+              <option value="Developer">Developer</option>
+              <option value="Manager">Manager</option>
+              <option value="Marketer">Marketer</option>
+              <option value="Designer">Designer</option>
+              <option value="Researcher">Researcher</option>
+              <option value="Other">Other</option>
+            </select>
           </div>
           <div class="form-group full-width">
-            <label>Expertise</label>
-            <input type="text" id="wiz-expertise" placeholder="e.g. Marketing, AI, Web Development">
-          </div>
-          <div class="form-group full-width">
-            <label>Goals</label>
-            <textarea id="wiz-goals" rows="2" placeholder="What do you want your team to help you achieve?"></textarea>
-          </div>
-          <div class="form-group full-width">
-            <label>Target Audience</label>
-            <input type="text" id="wiz-audience" placeholder="Who are you trying to reach?">
-          </div>
-          <div class="form-group full-width">
-            <label>Brand Voice</label>
-            <input type="text" id="wiz-voice" placeholder="e.g. Professional, casual, technical, friendly">
+            <label>What's your main goal? (1-2 sentences)</label>
+            <textarea id="wiz-goals" rows="2" placeholder="e.g. Build and launch a SaaS product, grow my audience, automate my workflow..."></textarea>
           </div>
         </div>
         <div class="wizard-actions">
           <button class="btn btn-secondary" onclick="App.wizardBack()">Back</button>
           <button class="btn btn-primary" onclick="App.wizardNext()">Next</button>
         </div>
-      </div>
-
-      <!-- Step 3: Team -->
-      <div class="wizard-step" data-step="3">
-        <h2>Team Setup</h2>
-        <p class="wizard-desc">Name your agent team. This becomes the identity of your orchestration system.</p>
-        <div class="form-grid">
-          <div class="form-group full-width">
-            <label>Team Name</label>
-            <input type="text" id="wiz-team-name" placeholder="e.g. Content Squad, Research Lab, Dev Team">
-          </div>
-          <div class="form-group full-width">
-            <label>Description</label>
-            <textarea id="wiz-team-desc" rows="2" placeholder="What does this team do?"></textarea>
-          </div>
-        </div>
-        <div class="wizard-actions">
-          <button class="btn btn-secondary" onclick="App.wizardBack()">Back</button>
-          <button class="btn btn-primary" onclick="App.wizardNext()">Next</button>
+        <div class="wizard-skip">
+          <a href="#" onclick="App.wizardNext(); return false;">Skip</a>
         </div>
       </div>
 
-      <!-- Step 4: Name Your Orchestrator -->
-      <div class="wizard-step" data-step="4">
-        <div class="wizard-icon" style="color:var(--gold)">&#9733;</div>
-        <h2>Your Orchestrator</h2>
-        <p class="wizard-desc">The orchestrator is the brain of your team. It coordinates all agents, manages tasks, and serves as your main point of contact. Give it a name and personality.</p>
-        <div class="form-grid">
-          <div class="form-group full-width">
-            <label>Orchestrator Name</label>
-            <input type="text" id="wiz-orch-name" placeholder="e.g. Commander, Atlas, Chief" value="Orchestrator">
-          </div>
-          <div class="form-group full-width">
-            <label>Personality Traits (comma-separated)</label>
-            <input type="text" id="wiz-orch-traits" placeholder="e.g. strategic, organized, decisive" value="strategic, organized, decisive">
-          </div>
-          <div class="form-group full-width">
-            <label>Tone</label>
-            <input type="text" id="wiz-orch-tone" placeholder="e.g. professional and efficient" value="professional and efficient">
-          </div>
-        </div>
-        <div class="wizard-actions">
-          <button class="btn btn-secondary" onclick="App.wizardBack()">Back</button>
-          <button class="btn btn-primary" onclick="App.wizardNext()">Next</button>
-        </div>
-      </div>
-
-      <!-- Step 5: Done -->
+      <!-- Step 5: Name Your Sidekick -->
       <div class="wizard-step" data-step="5">
+        <div class="wizard-icon" style="color:var(--gold)">&#9733;</div>
+        <h1>Every hero needs a sidekick.</h1>
+        <p class="wizard-desc">What's yours called?</p>
+        <div class="form-grid">
+          <div class="form-group full-width">
+            <input type="text" id="wiz-orch-name" placeholder="e.g. Hero, Atlas, Chief" value="Hero" style="font-size:18px;text-align:center;padding:14px;">
+          </div>
+        </div>
+        <p style="color:var(--text-muted);font-size:13px;line-height:1.6;margin-top:12px;">Your sidekick is the orchestrator - it coordinates your entire agent team. Think of it as your chief of staff. You talk to it, it manages everyone else.</p>
+        <div class="wizard-actions">
+          <button class="btn btn-secondary" onclick="App.wizardBack()">Back</button>
+          <button class="btn btn-primary" onclick="App.wizardNext()">Next</button>
+        </div>
+        <div class="wizard-skip">
+          <a href="#" onclick="App.wizardNext(); return false;">Skip</a>
+        </div>
+      </div>
+
+      <!-- Step 6: Team Generated -->
+      <div class="wizard-step" data-step="6">
         <div class="wizard-icon">&#10003;</div>
-        <h1>You're All Set!</h1>
-        <div id="wizard-summary" class="wizard-summary"></div>
-        <div style="background:rgba(210,153,34,0.1);border:1px solid var(--yellow);border-radius:8px;padding:16px;margin:16px 0;font-size:13px;line-height:1.6;">
-          <strong style="color:var(--yellow);">&#9733; Next Step:</strong>
-          Head to the <strong>Command Center</strong> and ask your orchestrator to build your team. For example: <em>"Build me a team with a Content Writer and a Researcher"</em>
+        <h1 id="wiz-team-title">Your team is ready!</h1>
+        <p class="wizard-desc" id="wiz-team-subtitle">Based on your selection, we created these agents:</p>
+        <div id="wiz-team-list" class="wiz-team-list"></div>
+        <div id="wiz-team-creating" class="wiz-team-creating" style="display:none;">
+          <div class="wiz-spinner"></div>
+          <span>Creating your team...</span>
         </div>
         <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:16px;margin:16px 0;font-size:12px;line-height:1.6;color:var(--text-muted);">
-          <strong style="color:var(--text);">&#128274; Security Note:</strong>
-          Agents run with the same file access as your user account. On machines with sensitive data, we recommend using <strong>Supervised</strong> permission mode - agents will ask for your confirmation before file writes and shell commands. You can change this anytime in <strong>Settings</strong>. See <strong>Help > Security &amp; Secrets</strong> for details.
+          <strong style="color:var(--text);"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Security Note:</strong>
+          Agents run with the same file access as your user account. On machines with sensitive data, we recommend using <strong>Supervised</strong> permission mode in <strong>Settings</strong>.
         </div>
         <div class="wizard-actions">
-          <button class="btn btn-primary btn-lg" onclick="App.wizardFinish()">Go to Command Center</button>
+          <button class="btn btn-primary btn-lg" id="wiz-finish-btn" onclick="App.wizardFinish()">Start - Go to Command Center</button>
         </div>
       </div>
+
     </div>
   </div>
 
   <!-- Sidebar -->
   <nav id="sidebar">
     <div class="sidebar-header" id="sidebar-header">
-      <h1>&#9881; Team</h1>
+      <div class="sidebar-header-row">
+        <h1>&#9881; Team</h1>
+        <div class="header-status-bubbles">
+          <span class="header-bubble header-bubble-pending" id="header-pending-bubble" title="Pending approval" style="display:none" onclick="App.navigate('dashboard'); setTimeout(function(){App.filterTasks('pending','dashboard');},100);">0</span>
+          <span class="header-bubble header-bubble-working" id="header-working-bubble" title="Working tasks" style="display:none" onclick="App.navigate('dashboard'); setTimeout(function(){App.filterTasks('working','dashboard');},100);">0</span>
+        </div>
+      </div>
       <span class="subtitle">Agent Portal</span>
     </div>
     <div class="nav-sticky-top">
       <a href="#" data-view="chat" class="nav-link nav-chat active"><span class="icon">&#9654;</span> Command Center</a>
       <a href="#" data-view="dashboard" class="nav-link"><span class="icon">&#9632;</span> Dashboard</a>
+      <a href="#" data-view="planner" class="nav-link"><span class="icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="11" rx="1.5"/><line x1="2" y1="6.5" x2="14" y2="6.5"/><line x1="5.5" y1="1.5" x2="5.5" y2="4.5"/><line x1="10.5" y1="1.5" x2="10.5" y2="4.5"/></svg></span> Timers<span class="nav-badge hidden" id="nav-planner-badge">0</span></a>
       <a href="#" data-view="autopilot" class="nav-link"><span class="icon">&#9881;</span> Autopilot<span class="nav-badge hidden" id="nav-autopilot-badge">0</span></a>
     </div>
     <ul class="nav-list" id="nav-list">
@@ -148,6 +229,7 @@
       <li><a href="#" data-view="add-agent" class="nav-link nav-add"><span class="icon">+</span> Add Agent</a></li>
       <li class="nav-section">Knowledge</li>
       <li><a href="#" data-view="knowledge" class="nav-link"><span class="icon">&#9776;</span> Knowledge Base</a></li>
+      <li><a href="#" data-view="mind-map" class="nav-link"><span class="icon"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="3" r="2"/><circle cx="3" cy="11" r="2"/><circle cx="11" cy="11" r="2"/><line x1="7" y1="5" x2="3" y2="9"/><line x1="7" y1="5" x2="11" y2="9"/></svg></span> Mind Map</a></li>
       <li class="nav-section">Media</li>
       <li><a href="#" data-view="media" class="nav-link"><span class="icon">&#9634;</span> Media Library</a></li>
       <li class="nav-section">Skills</li>
@@ -158,8 +240,10 @@
       <li><a href="#" data-view="settings" class="nav-link"><span class="icon">&#9881;</span> Settings</a></li>
       <li class="nav-section">Support</li>
       <li><a href="#" data-view="help" class="nav-link"><span class="icon">&#63;</span> Help</a></li>
+      <li><a href="#" data-view="license" class="nav-link"><span class="icon">&#9878;</span> License</a></li>
+      <li><a href="#" data-view="terms" class="nav-link"><span class="icon">&#9744;</span> Terms of Use</a></li>
     </ul>
-    <div id="update-banner" class="update-banner hidden" onclick="App.navigate('settings')">
+    <div id="update-banner" class="update-banner hidden" onclick="App.navigate('settings'); App.switchSettingsSection('updates')">
       <span class="update-dot"></span> Update Available
     </div>
     <div class="sidebar-footer"><span class="status-dot online"></span> System Active</div>
@@ -170,46 +254,64 @@
 
     <!-- Dashboard -->
     <section id="view-dashboard" class="view active">
-      <header class="view-header"><div class="header-left"><h2>Dashboard</h2><button id="btn-round-table" class="btn btn-secondary btn-rt" onclick="App.runRoundTable()">Round Table <span style="color:#86efac;margin-left:4px;">&#9654;</span></button></div><div class="header-actions"><button class="btn btn-secondary" onclick="App.openAddTask()">+ Add Task</button></div></header>
+      <header class="view-header"><div class="header-left"><h2>Dashboard</h2><button id="btn-round-table" class="btn btn-secondary btn-rt" onclick="App.runRoundTable()">Round Table <span style="color:#86efac;margin-left:4px;">&#9654;</span></button></div><div class="header-actions"><div class="notif-bell" onclick="App.toggleNotifications(event)" title="Notifications"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="notif-badge" style="display:none">0</span></div><button id="btn-global-autopilot" class="btn btn-autopilot-toggle" onclick="App.toggleGlobalAutopilot()" title="Global Autopilot"><span class="autopilot-icon">&#9889;</span> Autopilot <span id="autopilot-status-label">OFF</span></button><button class="btn btn-secondary" onclick="App.openAddTask()">+ Add Task</button></div></header>
       <div class="stats-row">
-        <div class="stat-card clickable-stat" data-filter="all" onclick="App.filterTasks('all','dashboard')"><div class="stat-value" id="stat-total">0</div><div class="stat-label">Active</div></div>
-        <div class="stat-card clickable-stat" data-filter="pending_approval" onclick="App.filterTasks('pending_approval','dashboard')"><div class="stat-value" id="stat-pending">0</div><div class="stat-label">Pending</div></div>
+        <div class="stat-card clickable-stat stat-card-active" data-filter="pending" onclick="App.filterTasks('pending','dashboard')"><div class="stat-value" id="stat-pending">0</div><div class="stat-label">Pending</div></div>
         <div class="stat-card clickable-stat" data-filter="working" onclick="App.filterTasks('working','dashboard')"><div class="stat-value" id="stat-working">0</div><div class="stat-label">Working</div></div>
         <div class="stat-card clickable-stat" data-filter="done" onclick="App.filterTasks('done','dashboard')"><div class="stat-value" id="stat-done">0</div><div class="stat-label">Done</div></div>
-        <div class="stat-card clickable-stat" data-filter="closed" onclick="App.filterTasks('closed','dashboard')"><div class="stat-value" id="stat-closed">0</div><div class="stat-label">Closed</div></div>
         <div class="stat-card clickable-stat" data-filter="hold" onclick="App.filterTasks('hold','dashboard')"><div class="stat-value" id="stat-hold">0</div><div class="stat-label">Hold</div></div>
+        <div class="stat-card clickable-stat" data-filter="cancelled" onclick="App.filterTasks('cancelled','dashboard')"><div class="stat-value" id="stat-cancelled">0</div><div class="stat-label">Cancelled</div></div>
+        <div class="stat-card clickable-stat" data-filter="closed" onclick="App.filterTasks('closed','dashboard')"><div class="stat-value" id="stat-closed">0</div><div class="stat-label">Closed</div></div>
         <div class="stat-card"><div class="stat-value" id="stat-agents">0</div><div class="stat-label">Agents</div></div>
       </div>
-      <div class="panel"><h3 id="dashboard-tasks-title">All Tasks
+      <div id="team-performance-section" class="panel team-perf-panel" style="display:none">
+        <h3 class="team-perf-header" onclick="App.toggleTeamPerf()"><span id="team-perf-toggle-icon">&#9654;</span> Team Performance</h3>
+        <div id="team-perf-cards" class="team-perf-cards" style="display:none"></div>
+      </div>
+      <div class="panel"><h3 id="dashboard-tasks-title">Pending
         <span class="view-mode-toggle">
           <button class="view-mode-btn active" data-view="hierarchy" onclick="App.setViewMode('hierarchy','dashboard')">Tree</button>
           <button class="view-mode-btn" data-view="flow" onclick="App.setViewMode('flow','dashboard')">Flow</button>
         </span>
         <span class="sort-toggle" id="dashboard-sort-toggle">
-          <button class="sort-btn active" data-sort="new" onclick="App.toggleSort('new','dashboard')">New</button>
+          <button class="sort-btn active" data-sort="updated" onclick="App.toggleSort('updated','dashboard')">Updated</button>
           <button class="sort-btn" data-sort="priority" onclick="App.toggleSort('priority','dashboard')">Priority</button>
         </span></h3>
         <div id="dashboard-agent-filter" class="agent-filter-bar"></div>
         <div id="dashboard-tag-filter" class="tag-filter-bar"></div>
+        <div id="dashboard-text-filter" class="text-filter-bar">
+          <input type="text" class="text-filter-input" placeholder="Search tasks..." oninput="App.setTextFilter(this.value,'dashboard')">
+          <select class="time-filter-select" onchange="App.setTimeFilter(this.value,'dashboard')">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+          </select>
+        </div>
         <div id="dashboard-tasks" class="task-list"><div class="empty-state">No tasks yet</div></div>
       </div>
       <div class="panel round-table-panel"><h3><span class="rt-icon"></span>Last Round Table</h3><div id="last-round-table" class="round-table-summary"><div class="empty-state">No round tables yet</div></div></div>
     </section>
 
-    <!-- Autopilot -->
-    <section id="view-autopilot" class="view">
+    <!-- Timers -->
+    <section id="view-planner" class="view">
       <header class="view-header">
-        <h2>Autopilot</h2>
+        <h2>Timers</h2>
         <div class="header-actions">
-          <button class="btn btn-secondary" id="ap-pause-all-btn" onclick="App.pauseAllAutopilot()">Pause All</button>
-          <button class="btn btn-primary" onclick="App.openAutopilotForm()">+ New Recurring Task</button>
+          <button class="btn btn-primary" onclick="App.openAutopilotForm()">+ Add Timed Task</button>
         </div>
       </header>
       <div class="panel">
-        <h3>Recurring Autopilot</h3>
-        <div id="autopilot-list"></div>
-        <div id="autopilot-form" class="hidden">
-          <div class="form-grid" style="margin-top:12px">
+        <h3>Recurring Tasks</h3>
+        <div id="planner-recurring-list"></div>
+      </div>
+      <div class="panel">
+        <h3>Future Tasks</h3>
+        <div id="planner-future-list"></div>
+      </div>
+      <div id="autopilot-form" class="hidden" style="margin:0 16px 16px">
+        <div class="panel">
+          <div class="form-grid" style="margin-top:0">
             <div class="form-group full-width">
               <label>Task Name</label>
               <input type="text" id="ap-name" placeholder="e.g. Daily standup check">
@@ -226,21 +328,36 @@
               </div>
               <input type="hidden" id="ap-agent">
             </div>
-            <div class="form-group">
-              <label>Interval</label>
-              <input type="number" id="ap-interval" min="1" value="1">
-            </div>
-            <div class="form-group">
-              <label>Unit</label>
-              <div class="custom-select" id="ap-unit-select" data-target="ap-interval-unit">
-                <div class="custom-select-trigger">Hours</div>
-                <div class="custom-select-dropdown">
-                  <div class="custom-select-option" data-value="minutes">Minutes</div>
-                  <div class="custom-select-option selected" data-value="hours">Hours</div>
-                  <div class="custom-select-option" data-value="days">Days</div>
-                </div>
+            <div class="form-group full-width">
+              <label>Schedule Type</label>
+              <div class="schedule-type-selector">
+                <button type="button" class="sched-type-btn active" id="sched-type-recurring" onclick="App.setSchedType('recurring')">Run on interval</button>
+                <button type="button" class="sched-type-btn" id="sched-type-onetime" onclick="App.setSchedType('onetime')">Run at specific time</button>
               </div>
-              <input type="hidden" id="ap-interval-unit" value="hours">
+            </div>
+            <div id="ap-interval-fields">
+              <div class="form-group" style="display:inline-block;width:45%">
+                <label>Interval</label>
+                <input type="number" id="ap-interval" min="1" value="1">
+              </div>
+              <div class="form-group" style="display:inline-block;width:45%;margin-left:8px">
+                <label>Unit</label>
+                <div class="custom-select" id="ap-unit-select" data-target="ap-interval-unit">
+                  <div class="custom-select-trigger">Hours</div>
+                  <div class="custom-select-dropdown">
+                    <div class="custom-select-option" data-value="minutes">Minutes</div>
+                    <div class="custom-select-option selected" data-value="hours">Hours</div>
+                    <div class="custom-select-option" data-value="days">Days</div>
+                  </div>
+                </div>
+                <input type="hidden" id="ap-interval-unit" value="hours">
+              </div>
+            </div>
+            <div id="ap-scheduled-fields" class="ap-scheduled-fields hidden">
+              <div class="form-group full-width">
+                <label>Scheduled At</label>
+                <input type="datetime-local" id="ap-scheduled-at" style="width:100%;padding:8px;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:inherit">
+              </div>
             </div>
           </div>
           <div class="form-actions">
@@ -249,17 +366,31 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- Autopilot -->
+    <section id="view-autopilot" class="view">
+      <header class="view-header">
+        <h2>Autopilot</h2>
+        <div class="header-actions">
+          <button class="btn btn-secondary" id="ap-pause-all-btn" onclick="App.pauseAllAutopilot()">Pause All</button>
+        </div>
+      </header>
       <div class="panel">
-        <h3>One-time Autopilot</h3>
-        <div id="autopilot-tasks" class="task-list"><div class="empty-state">No one-time autopilot tasks</div></div>
+        <h3>Recurring Tasks</h3>
+        <div id="autopilot-list"></div>
+      </div>
+      <div class="panel">
+        <div id="autopilot-tasks" class="task-list"><div class="empty-state">No scheduled or autopilot tasks</div></div>
       </div>
     </section>
 
     <!-- Command Center (Terminal) -->
     <section id="view-chat" class="view view-chat-fullscreen">
       <header class="view-header">
-        <div class="header-left"><h2>Command Center</h2><button class="btn btn-secondary btn-rt" onclick="App.runRoundTable()" title="Run a round table review">Round Table <span style="color:#86efac;margin-left:4px;">&#9654;</span></button></div>
+        <div class="header-left"><h2>Command Center</h2><button class="btn btn-secondary btn-rt" onclick="App.runRoundTable()" title="Run a round table review">Round Table <span style="color:#86efac;margin-left:4px;">&#9654;</span></button><button class="btn btn-secondary btn-rc" id="btn-remote-control" onclick="App.openRemoteControl()" title="Remote Control - access CLI from phone"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M5.6 7.8a8 8 0 0 1 12.8 0"/><path d="M8.1 10.5a4.5 4.5 0 0 1 7.8 0"/><circle cx="12" cy="14" r="1.5"/><line x1="12" y1="16" x2="12" y2="21"/></svg> Remote</button></div>
         <div class="header-actions">
+          <div class="notif-bell" onclick="App.toggleNotifications(event)" title="Notifications"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="notif-badge" style="display:none">0</span></div>
           <span id="chat-status" class="chat-status disconnected">Disconnected</span>
           <button class="btn btn-secondary" onclick="App.restartTerminal()" title="Restart CLI session">Restart CLI</button>
           <button class="btn btn-secondary" onclick="App.restartServer()" title="Restart the entire server">Restart Server</button>
@@ -271,6 +402,15 @@
         <span>Ctrl+V paste text</span>
         <span>Ctrl+C copy selected</span>
         <span>Ctrl+G open editor</span>
+        <button class="mic-terminal-btn" id="mic-terminal-btn" onclick="App.toggleMicrophone()" title="Toggle microphone">
+          <svg width="11" height="14" viewBox="0 0 11 14" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+            <rect x="3" y="0" width="5" height="8" rx="2.5" fill="currentColor"/>
+            <path d="M1 6.5C1 9.261 3.015 11.5 5.5 11.5C7.985 11.5 10 9.261 10 6.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <line x1="5.5" y1="11.5" x2="5.5" y2="13.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <line x1="3.5" y1="13.5" x2="7.5" y2="13.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+          Mic
+        </button>
         <button class="focus-terminal-btn" onclick="App.focusTerminal()" title="Focus terminal input">&#9660; Focus</button>
       </div>
     </section>
@@ -288,8 +428,19 @@
         <span class="badge badge-active" id="agent-detail-status">Active</span>
         <span class="agent-role" id="agent-detail-role">Role</span>
       </div>
+      <div class="agent-model-bar" id="agent-model-bar" style="display:none">
+        <span class="agent-model-label">Preferred Model:</span>
+        <select id="agent-model-select" onchange="App.saveAgentModel()">
+          <option value="">System Default</option>
+          <option value="opus">Opus 4.6</option>
+          <option value="sonnet">Sonnet 4.6</option>
+          <option value="haiku">Haiku 4.5</option>
+        </select>
+        <span class="agent-model-info" id="agent-model-info"></span>
+      </div>
       <div class="agent-tabs">
         <button class="tab-btn active" data-tab="tasks" onclick="App.switchAgentTab('tasks')">Tasks</button>
+        <button class="tab-btn" data-tab="stats" onclick="App.switchAgentTab('stats')">Stats</button>
         <button class="tab-btn" data-tab="profile" onclick="App.switchAgentTab('profile')">Profile</button>
         <button class="tab-btn" data-tab="memory" onclick="App.switchAgentTab('memory')">Memory</button>
         <button class="tab-btn" data-tab="files" onclick="App.switchAgentTab('files')">Files</button>
@@ -303,7 +454,7 @@
               <button class="view-mode-btn" data-view="flow" onclick="App.setViewMode('flow','agent')">Flow</button>
             </span>
             <span class="sort-toggle" id="agent-sort-toggle">
-              <button class="sort-btn active" data-sort="new" onclick="App.toggleSort('new','agent')">New</button>
+              <button class="sort-btn active" data-sort="updated" onclick="App.toggleSort('updated','agent')">Updated</button>
               <button class="sort-btn" data-sort="priority" onclick="App.toggleSort('priority','agent')">Priority</button>
             </span>
             <button class="btn btn-secondary" onclick="App.openAddTask(App.state.currentAgentId)" style="font-size:12px;padding:4px 12px;white-space:nowrap">+ Add Task</button>
@@ -311,7 +462,19 @@
         </div>
         <div id="agent-agent-filter" class="agent-filter-bar"></div>
         <div id="agent-tag-filter" class="tag-filter-bar"></div>
+        <div id="agent-text-filter" class="text-filter-bar">
+          <input type="text" class="text-filter-input" placeholder="Search tasks..." oninput="App.setTextFilter(this.value,'agent')">
+          <select class="time-filter-select" onchange="App.setTimeFilter(this.value,'agent')">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+          </select>
+        </div>
         <div id="agent-tasks-list" class="task-list"></div>
+      </div>
+      <div id="agent-tab-stats" class="agent-tab">
+        <div id="agent-stats-content"><p class="empty-state">Loading stats...</p></div>
       </div>
       <div id="agent-tab-profile" class="agent-tab">
         <div class="panel"><h3>Mission</h3><p id="agent-detail-mission" class="content-text"></p></div>
@@ -377,9 +540,11 @@
         <span class="badge" id="task-detail-priority">Priority</span>
         <span class="badge badge-type" id="task-detail-type" style="display:none">general</span>
         <span id="task-detail-agent"></span>
+        <span id="task-detail-model-info" class="task-model-info" style="display:none"></span>
         <span id="task-detail-date"></span>
         <span id="task-detail-tags"></span>
       </div>
+      <div id="task-detail-lineage" style="display:none"></div>
       <div id="task-session" class="task-session"></div>
       <div id="task-promote-bar" class="promote-bar hidden">
         <button class="btn btn-secondary" onclick="App.promoteToKnowledge()">Promote to Knowledge Base</button>
@@ -502,6 +667,15 @@
           <div class="settings-sidebar-item" data-section="permission-mode" onclick="App.switchSettingsSection('permission-mode')">
             <span class="settings-icon">&#9744;</span> Permission Mode
           </div>
+          <div class="settings-sidebar-item" data-section="notifications" onclick="App.switchSettingsSection('notifications')">
+            <span class="settings-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></span> Notifications
+          </div>
+          <div class="settings-sidebar-item" data-section="privacy" onclick="App.switchSettingsSection('privacy')">
+            <span class="settings-icon">&#9737;</span> Privacy
+          </div>
+          <div class="settings-sidebar-item" data-section="model-routing" onclick="App.switchSettingsSection('model-routing')">
+            <span class="settings-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></span> Model Routing
+          </div>
           <div class="settings-sidebar-section">Vault</div>
           <div class="settings-sidebar-item" data-section="api-keys" onclick="App.switchSettingsSection('api-keys')">
             <span class="settings-icon">&#10038;</span> API Keys & Secrets
@@ -525,6 +699,10 @@
           </div>
           <div class="settings-sidebar-item" data-section="server-control" onclick="App.switchSettingsSection('server-control')">
             <span class="settings-icon">&#9655;</span> Server Control
+          </div>
+          <div class="settings-sidebar-section">Help</div>
+          <div class="settings-sidebar-item" data-section="help-support" onclick="App.switchSettingsSection('help-support')">
+            <span class="settings-icon">&#9888;&#xFE0E;</span> Help &amp; Support
           </div>
           <div class="settings-sidebar-footer">
             <span id="settings-team-name">-</span> <span id="settings-version">v1.0.0</span> - <span id="settings-agent-count">0</span> agents
@@ -559,6 +737,53 @@
                 <span id="permission-mode-desc" class="form-hint" style="margin:0"></span>
               </div>
             </div>
+          </div>
+
+          <!-- Notifications -->
+          <div class="settings-section" id="settings-sec-notifications">
+            <div class="settings-section-title">Notifications</div>
+            <div class="settings-section-desc">Configure how you get alerted when tasks need your attention.</div>
+            <div class="settings-group">
+              <div class="setting-item">
+                <div>
+                  <span class="setting-label">Browser Notifications</span>
+                  <span class="form-hint" style="display:block;margin:2px 0 0 0">Show desktop alerts when tasks need review or hit a blocker</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="notif-toggle-browser" onchange="App.saveNotifPrefs()">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <div>
+                  <span class="setting-label">Sound Alerts</span>
+                  <span class="form-hint" style="display:block;margin:2px 0 0 0">Play a chime for high-priority events</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="notif-toggle-sound" onchange="App.saveNotifPrefs()">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Privacy -->
+          <div class="settings-section" id="settings-sec-privacy">
+            <div class="settings-section-title">Privacy</div>
+            <div class="settings-section-desc">How Orchivra handles your data.</div>
+            <div class="settings-group">
+              <div class="setting-item" style="flex-direction:column;align-items:flex-start;gap:8px">
+                <span class="setting-label" style="color:var(--text)">Your data stays on your machine</span>
+                <p style="margin:0;font-size:13px;line-height:1.7;color:var(--text-muted);">Orchivra runs entirely on your machine. No data is collected or transmitted to us. All agent data, tasks, credentials, and knowledge stay local. AI interactions go directly to your configured AI provider (e.g. Anthropic) under your own account and subscription.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Model Routing -->
+          <div class="settings-section" id="settings-sec-model-routing">
+            <div class="settings-section-title">Model Routing</div>
+            <div class="settings-section-desc">Choose how the platform selects AI models for agents. Optimize for cost, quality, or let the system decide.</div>
+            <div id="model-routing-content"></div>
           </div>
 
           <!-- API Keys & Secrets -->
@@ -704,6 +929,10 @@
                     <button class="btn btn-primary hidden" id="update-upgrade-btn" onclick="App.performUpgrade()">Upgrade Now</button>
                   </div>
                 </div>
+                <div class="setting-item" style="margin-top:4px">
+                  <span class="setting-label" style="flex:1;min-width:0">Run a full system health check via the CLI</span>
+                  <button class="btn btn-secondary" style="flex-shrink:0;white-space:nowrap" onclick="App.runHealthCheck()">System Health Check</button>
+                </div>
               </div>
             </div>
           </div>
@@ -757,22 +986,52 @@
           <!-- Claude Account -->
           <div class="settings-section" id="settings-sec-claude-account">
             <div class="settings-section-title">Claude Account</div>
-            <div class="settings-section-desc">Claude CLI powers the Command Center. Check your CLI installation and connection status.</div>
-            <div class="settings-group">
-              <div class="setting-item">
-                <span class="setting-label">CLI Status</span>
-                <span id="claude-installed" class="badge badge-inactive">Checking...</span>
-              </div>
-              <div class="setting-item">
-                <span class="setting-label">Version</span>
-                <span id="claude-version">-</span>
-              </div>
-              <div class="setting-item">
-                <span class="setting-label">Connection</span>
-                <div style="display:flex;gap:8px;align-items:center;">
-                  <button class="btn btn-secondary" onclick="App.checkClaudeStatus()" style="font-size:12px;padding:4px 12px;">Check Status</button>
+            <div class="settings-section-desc">Manage your Claude AI connection. This powers the Command Center.</div>
+
+            <!-- Connection Status -->
+            <div id="claude-conn-status" class="claude-conn-status claude-conn-disconnected">
+              <div class="claude-conn-status-left">
+                <span id="claude-conn-dot" class="claude-conn-dot"></span>
+                <div>
+                  <div id="claude-conn-label" style="font-weight:500">Not Connected</div>
+                  <div id="claude-conn-detail" style="font-size:12px;color:var(--text-muted)">No Claude connection configured</div>
                 </div>
               </div>
+              <button class="btn btn-secondary" onclick="App.refreshClaudeStatus()" style="font-size:12px;padding:4px 12px;">Refresh Status</button>
+            </div>
+
+            <!-- Connection Method Cards -->
+            <div style="font-size:13px;font-weight:600;color:var(--text-muted);margin:20px 0 10px;text-transform:uppercase;letter-spacing:0.5px;">Connection Method</div>
+            <div class="claude-method-cards">
+              <!-- Account (CLI) Card -->
+              <div id="claude-cli-card" class="claude-method-card" onclick="App.switchClaudeMethod('cli')">
+                <div class="claude-method-card-header">
+                  <span class="claude-method-card-title">Account (CLI)</span>
+                </div>
+                <p style="font-size:12px;color:var(--text-muted);margin:8px 0">Uses your Claude Pro or Max subscription. Fixed monthly cost.</p>
+                <div id="claude-cli-path" style="font-size:11px;color:var(--text-dim);margin-bottom:8px"></div>
+                <button class="btn btn-secondary" onclick="event.stopPropagation();App.verifyClaudeCli()" style="font-size:11px;padding:3px 10px;">Verify Connection</button>
+                <div id="claude-cli-verify-status" style="font-size:11px;margin-top:4px"></div>
+              </div>
+
+              <!-- API Token Card -->
+              <div id="claude-api-card" class="claude-method-card" onclick="App.switchClaudeMethod('api')">
+                <div class="claude-method-card-header">
+                  <span class="claude-method-card-title">API Token</span>
+                </div>
+                <p style="font-size:12px;color:var(--text-muted);margin:8px 0">Pay per use via Anthropic API console.</p>
+                <div id="claude-api-key-row" style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+                  <input type="password" id="claude-api-key-input" class="claude-masked-key" placeholder="sk-ant-..." autocomplete="off" onclick="event.stopPropagation()">
+                  <button class="btn btn-secondary" onclick="event.stopPropagation();App.updateClaudeApiKey()" style="font-size:11px;padding:3px 10px;">Update</button>
+                </div>
+                <a href="https://console.anthropic.com" target="_blank" style="font-size:11px;color:var(--accent)" onclick="event.stopPropagation()">console.anthropic.com</a>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+              <button class="btn claude-disconnect-btn" onclick="App.disconnectClaude()">Disconnect</button>
+              <span style="font-size:12px;color:var(--text-muted);margin-left:8px">Remove current Claude connection</span>
             </div>
           </div>
 
@@ -792,6 +1051,22 @@
             </div>
           </div>
 
+          <!-- Help & Support -->
+          <div class="settings-section" id="settings-sec-help-support">
+            <div class="settings-section-title">Help &amp; Support</div>
+            <div class="settings-section-desc">Report bugs, request features, or ask questions. Reports are submitted as GitHub Issues on the Orchivra repository.</div>
+            <div class="settings-group">
+              <div class="setting-item">
+                <span class="setting-label">Found a bug or have a suggestion? Let us know.</span>
+                <button class="btn btn-primary" onclick="App.showBugReportModal()">Report a Bug</button>
+              </div>
+              <div class="setting-item">
+                <span class="setting-label">Version</span>
+                <span id="settings-help-version" style="color:var(--text-secondary);font-size:13px;">-</span>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
     </section>
@@ -799,14 +1074,22 @@
     <!-- Knowledge Base -->
     <section id="view-knowledge" class="view">
       <header class="view-header"><h2>Knowledge Base</h2></header>
-      <div class="filter-bar" id="knowledge-filter-bar">
-        <button class="filter-btn active" data-filter="all" onclick="App.filterKnowledge('all')">All</button>
-        <button class="filter-btn" data-filter="research" onclick="App.filterKnowledge('research')">Research</button>
-        <button class="filter-btn" data-filter="analysis" onclick="App.filterKnowledge('analysis')">Analysis</button>
-        <button class="filter-btn" data-filter="reference" onclick="App.filterKnowledge('reference')">Reference</button>
-        <button class="filter-btn" data-filter="guide" onclick="App.filterKnowledge('guide')">Guides</button>
+      <div class="knowledge-layout">
+        <div class="knowledge-sidebar" id="knowledge-sidebar">
+          <div class="kb-sidebar-header">Folders <button class="kb-add-folder-btn" onclick="App.createKbFolder()" title="New Folder">+</button></div>
+          <div class="kb-folder-list" id="kb-folder-list"></div>
+        </div>
+        <div class="knowledge-main">
+          <div class="filter-bar" id="knowledge-filter-bar">
+            <button class="filter-btn active" data-filter="all" onclick="App.filterKnowledge('all')">All</button>
+            <button class="filter-btn" data-filter="research" onclick="App.filterKnowledge('research')">Research</button>
+            <button class="filter-btn" data-filter="analysis" onclick="App.filterKnowledge('analysis')">Analysis</button>
+            <button class="filter-btn" data-filter="reference" onclick="App.filterKnowledge('reference')">Reference</button>
+            <button class="filter-btn" data-filter="guide" onclick="App.filterKnowledge('guide')">Guides</button>
+          </div>
+          <div id="knowledge-grid" class="knowledge-grid"><div class="empty-state">No knowledge documents yet</div></div>
+        </div>
       </div>
-      <div id="knowledge-grid" class="knowledge-grid"><div class="empty-state">No knowledge documents yet</div></div>
     </section>
 
     <!-- Knowledge Detail -->
@@ -815,13 +1098,14 @@
         <button class="btn btn-secondary" onclick="App.navigate('knowledge')">&#8592; Back</button>
         <h2 id="knowledge-detail-title">Document</h2>
         <div class="header-actions">
+          <button class="btn btn-secondary" onclick="App.moveKbDoc()">Move to Folder</button>
           <button class="btn btn-cancel" onclick="App.deleteKnowledgeDoc()">Delete</button>
         </div>
       </header>
       <div class="knowledge-detail-meta" id="knowledge-detail-meta"></div>
       <div class="panel" id="knowledge-summary-panel" style="display:none">
         <h3>Summary</h3>
-        <p id="knowledge-detail-summary" class="content-text"></p>
+        <div id="knowledge-detail-summary" class="content-text"></div>
       </div>
       <div class="panel">
         <h3>Content</h3>
@@ -829,11 +1113,77 @@
       </div>
     </section>
 
+    <!-- Mind Map -->
+    <section id="view-mind-map" class="view">
+      <div class="view-header">
+        <div class="header-left"><h2>Mind Map</h2></div>
+        <div class="header-actions">
+          <div class="custom-select" id="pm-project-select">
+            <div class="custom-select-trigger">Select Project</div>
+            <div class="custom-select-dropdown" id="pm-project-dropdown"></div>
+          </div>
+        </div>
+      </div>
+      <div class="stats-row" id="pm-stats-row"></div>
+      <div class="pm-legend" id="pm-legend"></div>
+      <div class="pm-grid" id="pm-grid">
+        <div class="empty-state">
+          <div class="empty-state-text">No project specs yet</div>
+          <div class="empty-state-hint">Project specs are created by agents during task execution</div>
+        </div>
+      </div>
+      <div class="pm-detail-overlay hidden" id="pm-detail-overlay">
+        <div class="pm-detail-panel" id="pm-detail-panel">
+          <div class="pm-detail-header">
+            <div class="pm-detail-title"></div>
+            <button class="pm-detail-close" onclick="App.closePMDetail()">&times;</button>
+          </div>
+          <div class="pm-detail-content"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- Skills -->
     <section id="view-skills" class="view">
       <header class="view-header"><h2>Skills</h2></header>
       <p class="form-hint" style="margin-bottom:20px">Enable curated capabilities for your agents. Skills install dependencies and configure integrations automatically.</p>
-      <div id="skills-grid" class="skills-grid"><div class="empty-state">Loading skills...</div></div>
+      <div class="agent-tabs" id="skills-tabs">
+        <button class="tab-btn active" onclick="App.switchSkillsTab('installed')">Installed Skills</button>
+        <button class="tab-btn" onclick="App.switchSkillsTab('discover')">Discover Skills</button>
+      </div>
+      <div id="skills-tab-installed" class="skills-tab-content active">
+        <div id="skills-installed-container">
+          <div id="skills-section-curated">
+            <div class="skills-section-header">
+              <h3>Curated Skills</h3>
+              <span class="skills-section-subtitle">Built-in integrations vetted for your agents</span>
+            </div>
+            <div id="skills-grid-curated" class="skills-grid"><div class="empty-state">Loading skills...</div></div>
+          </div>
+          <div id="skills-section-user">
+            <div class="skills-section-header">
+              <h3>My Skills</h3>
+              <span class="skills-section-subtitle">Installed from MCP Registry or npm</span>
+            </div>
+            <div id="skills-grid-user" class="skills-grid"></div>
+          </div>
+        </div>
+      </div>
+      <div id="skills-tab-discover" class="skills-tab-content">
+        <div class="skills-search-bar">
+          <input type="text" id="skills-search-input" placeholder="Search MCP servers..." onkeydown="if(event.key==='Enter')App.searchDiscoverSkills()">
+          <button class="btn btn-primary" onclick="App.searchDiscoverSkills()">Search</button>
+        </div>
+        <div id="skills-search-results" class="skills-grid">
+          <div class="empty-state">Search for MCP servers to extend your agents' capabilities</div>
+        </div>
+        <div id="skills-search-loading" class="empty-state" style="display:none">
+          <span class="spinner"></span> Searching...
+        </div>
+        <div id="skills-search-more" style="display:none;text-align:center;padding:20px 0">
+          <button class="btn btn-secondary" onclick="App.loadMoreSkills()">Load More</button>
+        </div>
+      </div>
     </section>
 
     <!-- Help -->
@@ -845,7 +1195,98 @@
       </div>
     </section>
 
+    <!-- License -->
+    <section id="view-license" class="view">
+      <header class="view-header"><h2>License</h2></header>
+      <div class="license-page">
+        <div class="license-summary card">
+          <div class="license-badge-row">
+            <span class="license-badge">MIT License</span>
+            <span class="license-badge license-badge-open">Open Source</span>
+          </div>
+          <p class="license-intro">Orchivra is open source under the <strong>MIT License</strong>. You are free to use, modify, and distribute this software for any purpose, including commercial use.</p>
+          <div class="license-permissions">
+            <div class="license-perm"><span class="license-perm-icon" style="color:#86efac;">&#10003;</span> Commercial use</div>
+            <div class="license-perm"><span class="license-perm-icon" style="color:#86efac;">&#10003;</span> Modification</div>
+            <div class="license-perm"><span class="license-perm-icon" style="color:#86efac;">&#10003;</span> Distribution</div>
+            <div class="license-perm"><span class="license-perm-icon" style="color:#86efac;">&#10003;</span> Private use</div>
+          </div>
+        </div>
+        <div class="license-full card">
+          <h3>Full License Text</h3>
+          <pre class="license-text">MIT License
+
+Copyright (c) 2025-present Sagi Yaacoby
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</pre>
+        </div>
+        <div class="license-links card">
+          <a href="https://github.com/sagiyaacoby/Orchivra" target="_blank" class="btn btn-secondary">View on GitHub &#8599;</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Terms of Use -->
+    <section id="view-terms" class="view">
+      <header class="view-header"><h2>Terms of Use</h2></header>
+      <div class="license-page">
+        <div class="license-summary card">
+          <div class="license-badge-row">
+            <span class="license-badge">Terms of Use</span>
+          </div>
+          <p class="license-intro">By using Orchivra, you agree to these terms. AI agents act with autonomy and can make mistakes. You are responsible for supervising agent actions and maintaining backups.</p>
+        </div>
+        <div class="license-full card">
+          <h3>Full Terms</h3>
+          <div id="terms-content" class="version-content" style="white-space:pre-wrap;font-size:13px;line-height:1.7;color:var(--text-muted);">Loading...</div>
+        </div>
+        <div class="license-links card">
+          <a href="https://github.com/sagiyaacoby/Orchivra/blob/main/TERMS.md" target="_blank" class="btn btn-secondary">View on GitHub &#8599;</a>
+        </div>
+      </div>
+    </section>
+
   </main>
+
+  <!-- Global Notification Dropdown -->
+  <div class="notif-dropdown" id="notif-dropdown" style="display:none">
+    <div class="notif-dropdown-header">
+      <span>Notifications</span>
+      <button class="notif-clear-btn" onclick="App.clearAllNotifications()">Clear All</button>
+    </div>
+    <div class="notif-list" id="notif-list">
+      <div class="notif-empty">No notifications</div>
+    </div>
+  </div>
+
+  <!-- Global Autopilot Confirmation Modal -->
+  <div id="autopilot-confirm-modal" class="modal-overlay hidden" onclick="if(event.target===this)App.cancelAutopilotConfirm()">
+    <div class="modal-box autopilot-confirm-box">
+      <h3 id="autopilot-confirm-title">Toggle Autopilot</h3>
+      <p class="autopilot-confirm-text">When Autopilot is ON, agents plan and execute tasks without waiting for your approval. Completed tasks stay in Done for 2 days so you can review before they close. You can still intervene at any time.</p>
+      <p class="autopilot-confirm-warning">This means agents will act without your explicit approval.</p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="App.cancelAutopilotConfirm()">Cancel</button>
+        <button class="btn btn-primary" id="autopilot-confirm-btn" onclick="App.confirmGlobalAutopilot()">Confirm</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Add Task Modal -->
   <div id="add-task-modal" class="modal-overlay hidden" onclick="if(event.target===this)App.closeAddTask()">
@@ -902,15 +1343,6 @@
           <label>Due Date</label>
           <input type="date" id="add-task-duedate">
         </div>
-        <div class="form-group full-width">
-          <label>Tags</label>
-          <div class="tag-input-container" id="add-task-tag-container">
-            <div class="tag-input-wrap" id="add-task-tag-wrap" onclick="this.querySelector('.tag-input-field').focus()">
-              <input type="text" class="tag-input-field" id="add-task-tag-input" placeholder="Type a tag and press Enter..." autocomplete="off">
-            </div>
-            <div class="tag-autocomplete" id="add-task-tag-autocomplete"></div>
-          </div>
-        </div>
         <div class="form-group full-width add-task-advanced hidden" id="add-task-advanced">
           <div class="form-grid">
             <div class="form-group">
@@ -929,6 +1361,16 @@
                 <input type="text" class="tag-input-field" id="add-task-depends-input" placeholder="Search tasks..." autocomplete="off">
               </div>
               <div class="tag-autocomplete" id="add-task-depends-autocomplete"></div>
+            </div>
+            <div class="form-group" style="position:relative">
+              <label>Supersedes</label>
+              <div class="custom-select" id="add-task-supersedes-select" data-target="add-task-supersedes">
+                <div class="custom-select-trigger">None</div>
+                <div class="custom-select-dropdown" id="add-task-supersedes-options">
+                  <div class="custom-select-option selected" data-value="">None</div>
+                </div>
+              </div>
+              <input type="hidden" id="add-task-supersedes" value="">
             </div>
           </div>
         </div>
@@ -952,6 +1394,61 @@
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="App.closeAddTask()">Cancel</button>
         <button class="btn btn-primary" onclick="App.submitAddTask()">Create Task</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add to KB Modal -->
+  <div id="add-kb-modal" class="modal-overlay hidden" onclick="if(event.target===this)App.closeAddToKb()">
+    <div class="modal-box" style="max-width:420px">
+      <h3>Add to Knowledge Base</h3>
+      <div class="form-group">
+        <label>Title</label>
+        <input type="text" id="add-kb-title" placeholder="Document title">
+      </div>
+      <div class="form-group">
+        <label>Category</label>
+        <select id="add-kb-category" class="input">
+          <option value="research">Research</option>
+          <option value="analysis">Analysis</option>
+          <option value="reference" selected>Reference</option>
+          <option value="guide">Guide</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tags (comma-separated)</label>
+        <input type="text" id="add-kb-tags" placeholder="tag1, tag2">
+      </div>
+      <div class="form-group">
+        <label>Summary (optional)</label>
+        <input type="text" id="add-kb-summary" placeholder="Brief summary">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="App.closeAddToKb()">Cancel</button>
+        <button class="btn btn-primary" onclick="App.submitAddToKb()">Add to KB</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add to Media Modal -->
+  <div id="add-media-modal" class="modal-overlay hidden" onclick="if(event.target===this)App.closeAddToMedia()">
+    <div class="modal-box" style="max-width:420px">
+      <h3>Add to Media Library</h3>
+      <div id="add-media-preview" style="text-align:center;margin-bottom:12px"></div>
+      <div class="form-group">
+        <label>Folder</label>
+        <select id="add-media-folder" class="input">
+          <option value="social-images">social-images</option>
+          <option value="deliverables">deliverables</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Filename</label>
+        <input type="text" id="add-media-filename" placeholder="filename.png">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="App.closeAddToMedia()">Cancel</button>
+        <button class="btn btn-primary" onclick="App.submitAddToMedia()">Add to Media</button>
       </div>
     </div>
   </div>
@@ -1001,7 +1498,7 @@
           <label><input type="checkbox" id="upgrade-force-check" onchange="App.toggleUpgradeBtn()"> I understand agents may be interrupted</label>
         </div>
       </div>
-      <div class="upgrade-backup-note">&#128274; A backup will be created before upgrading.</div>
+      <div class="upgrade-backup-note"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> A backup will be created before upgrading.</div>
       <div id="upgrade-progress-container" class="hidden">
         <div class="upgrade-progress">
           <div class="upgrade-progress-step" data-step="check"><span class="step-icon">&#9675;</span> Checking for active agents...</div>
@@ -1030,6 +1527,127 @@
   <div id="post-upgrade-banner" class="post-upgrade-banner hidden">
     <span id="post-upgrade-text"></span>
     <button class="banner-dismiss" onclick="App.dismissUpgradeBanner()">&times;</button>
+  </div>
+
+
+  <!-- Remote Control Modal -->
+  <div id="remote-control-modal" class="rc-modal-overlay hidden" onclick="if(event.target===this)App.closeRemoteControl()">
+    <div class="rc-modal">
+      <div class="rc-modal-header">
+        <h3>Remote Control</h3>
+        <button class="rc-modal-close" onclick="App.closeRemoteControl()">&times;</button>
+      </div>
+      <div class="rc-modal-body">
+        <div class="rc-status" id="rc-status">
+          <span class="rc-status-dot rc-status-inactive"></span>
+          <span id="rc-status-text">Inactive</span>
+        </div>
+        <div id="rc-url-area" class="rc-url-area hidden">
+          <label class="rc-label">Session URL</label>
+          <div class="rc-url-row">
+            <input type="text" id="rc-url-input" class="rc-url-input" readonly>
+            <button class="btn btn-secondary btn-sm" onclick="App.copyRcUrl()" title="Copy URL">Copy</button>
+          </div>
+        </div>
+        <div id="rc-qr-area" class="rc-qr-area hidden">
+          <div id="rc-qr-code" class="rc-qr-code"></div>
+        </div>
+        <div class="rc-help">
+          <p>Access your team's CLI from your phone or any browser.</p>
+          <p>Send text commands, approve tasks, run round tables - all remotely.</p>
+          <p class="rc-help-note">This is CLI access, not dashboard access. Requires a Claude Pro or Max plan.</p>
+          <p class="rc-help-links"><a href="https://claude.ai/code" target="_blank" rel="noopener">claude.ai/code</a> - <a href="https://apps.apple.com/app/claude/id6473753684" target="_blank" rel="noopener">Claude mobile app</a></p>
+        </div>
+        <div class="rc-actions">
+          <button id="rc-start-btn" class="btn btn-primary" onclick="App.startRemoteControl()">Start Remote Control</button>
+          <button id="rc-stop-btn" class="btn btn-cancel hidden" onclick="App.stopRemoteControl()">Stop Remote Control</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bug Report Modal -->
+  <div id="bug-report-modal" class="modal-overlay hidden" onclick="if(event.target===this)App.closeBugReportModal()">
+    <div class="bug-report-modal-content">
+      <div class="bug-report-header">
+        <h3>Report a Bug</h3>
+        <button class="modal-close" onclick="App.closeBugReportModal()">&times;</button>
+      </div>
+      <div id="bug-report-form-container">
+        <div class="bug-report-field">
+          <label>Category</label>
+          <select id="bug-report-category">
+            <option value="bug">Bug Report</option>
+            <option value="feature">Feature Request</option>
+            <option value="question">Question</option>
+          </select>
+        </div>
+        <div class="bug-report-field">
+          <label>Title <span class="required">*</span></label>
+          <input type="text" id="bug-report-title" placeholder="Short summary of the issue" maxlength="200">
+        </div>
+        <div class="bug-report-field">
+          <label>Description <span class="required">*</span></label>
+          <textarea id="bug-report-description" placeholder="Describe what happened and what you expected to happen. Be as specific as possible." rows="4"></textarea>
+        </div>
+        <div class="bug-report-field">
+          <label>Steps to Reproduce <span class="optional">(optional)</span></label>
+          <textarea id="bug-report-steps" placeholder="1. Go to...&#10;2. Click...&#10;3. See error..." rows="3"></textarea>
+        </div>
+        <div class="bug-report-field">
+          <label>Severity</label>
+          <div class="bug-report-severity">
+            <label class="severity-option"><input type="radio" name="bug-severity" value="critical"><span>Critical - App crashes or data loss</span></label>
+            <label class="severity-option"><input type="radio" name="bug-severity" value="major"><span>Major - Feature broken, no workaround</span></label>
+            <label class="severity-option"><input type="radio" name="bug-severity" value="minor" checked><span>Minor - Feature broken, workaround exists</span></label>
+            <label class="severity-option"><input type="radio" name="bug-severity" value="cosmetic"><span>Cosmetic - Visual issue only</span></label>
+          </div>
+        </div>
+        <div class="bug-report-diag-box" id="bug-report-diag-box">
+          <div class="diag-header">
+            <span class="diag-summary" id="bug-report-diag-summary">Loading diagnostics...</span>
+            <button class="diag-toggle" onclick="App.toggleBugDiagnostics()">Show details</button>
+          </div>
+          <pre class="diag-details hidden" id="bug-report-diag-details"></pre>
+        </div>
+        <div class="bug-report-field">
+          <label class="bug-report-checkbox"><input type="checkbox" id="bug-report-include-diag" checked> Include diagnostic information</label>
+        </div>
+        <div class="bug-report-field">
+          <label class="bug-report-checkbox"><input type="checkbox" id="bug-report-include-screenshot" onchange="App.toggleScreenshotArea()"> Include screenshot (paste or drag &amp; drop)</label>
+        </div>
+        <div class="bug-report-screenshot hidden" id="bug-report-screenshot-area">
+          <div class="screenshot-dropzone" id="bug-report-dropzone" onclick="document.getElementById('bug-report-file-input').click()">
+            <span>Drag &amp; drop or click to add screenshot</span>
+            <input type="file" id="bug-report-file-input" accept="image/*" style="display:none" onchange="App.handleScreenshotFile(this)">
+          </div>
+          <div class="screenshot-preview hidden" id="bug-report-preview">
+            <img id="bug-report-preview-img" alt="Screenshot preview">
+            <button class="screenshot-remove" onclick="App.removeScreenshot()">Remove</button>
+          </div>
+        </div>
+        <div class="bug-report-actions">
+          <button class="btn btn-secondary" onclick="App.closeBugReportModal()">Cancel</button>
+          <button class="btn btn-primary" id="bug-report-submit" onclick="App.submitBugReport()">Submit Report</button>
+        </div>
+      </div>
+      <div id="bug-report-success" class="hidden">
+        <div class="bug-report-success-icon">&#10003;</div>
+        <h4>Thank you for your report!</h4>
+        <p id="bug-report-success-msg"></p>
+        <div class="bug-report-success-actions">
+          <a id="bug-report-issue-link" href="#" target="_blank" class="btn btn-secondary hidden">View on GitHub</a>
+          <button class="btn btn-primary" onclick="App.closeBugReportModal()">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- GitHub Star Bar -->
+  <div class="github-star-bar">
+    <span class="star-icon">&#11088;</span>
+    <span>Enjoy Orchivra? </span>
+    <a href="https://github.com/sagiyaacoby/Orchivra" target="_blank" class="star-link">Star us on GitHub &#9733;</a>
   </div>
 
   <!-- Toast -->

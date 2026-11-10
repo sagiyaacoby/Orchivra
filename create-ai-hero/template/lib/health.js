@@ -75,7 +75,40 @@ function validateSystem(ctx) {
     }
   }
 
-  // 8. enabled.json references only skills that exist in catalog
+  // 8. agent-os.md exists (critical for agent operations)
+  var agentOsPath = ctx.path.join(ctx.ROOT, 'config/agent-os.md');
+  if (!ctx.fs.existsSync(agentOsPath)) {
+    issues.push({ level: 'error', check: 'agent-os', message: 'config/agent-os.md is missing. Agents cannot function without the Platform OS file.' });
+  } else {
+    try {
+      var agentOsStat = ctx.fs.statSync(agentOsPath);
+      if (agentOsStat.size === 0) {
+        issues.push({ level: 'error', check: 'agent-os', message: 'config/agent-os.md exists but is empty.' });
+      }
+    } catch (e) {}
+  }
+
+  // 9. team-rules.md exists
+  if (!ctx.fs.existsSync(ctx.path.join(ctx.ROOT, 'config/team-rules.md'))) {
+    issues.push({ level: 'warning', check: 'team-rules', message: 'config/team-rules.md is missing. CLAUDE.md generation may be incomplete.' });
+  }
+
+  // 10. security-rules.md exists
+  if (!ctx.fs.existsSync(ctx.path.join(ctx.ROOT, 'config/security-rules.md'))) {
+    issues.push({ level: 'warning', check: 'security-rules', message: 'config/security-rules.md is missing. CLAUDE.md generation may be incomplete.' });
+  }
+
+  // 11. All agents in registry have agent.md files
+  if (registry && Array.isArray(registry.agents)) {
+    for (var p = 0; p < registry.agents.length; p++) {
+      var agentMdPath = ctx.path.join(ctx.ROOT, 'agents', registry.agents[p].id, 'agent.md');
+      if (!ctx.fs.existsSync(agentMdPath)) {
+        issues.push({ level: 'warning', check: 'agent-md', message: 'Agent "' + registry.agents[p].name + '" (' + registry.agents[p].id + ') is missing agent.md file.' });
+      }
+    }
+  }
+
+  // 12. enabled.json references only skills that exist in catalog
   if (Array.isArray(catalog)) {
     var catalogIds = {};
     for (var k = 0; k < catalog.length; k++) {
@@ -99,10 +132,89 @@ function validateSystem(ctx) {
     if (issues[n].level === 'warning') { status = 'warning'; }
   }
 
+  // Check for upgrade-pending flag
+  var upgradePending = null;
+  var upgradeFlagPath = ctx.path.join(ctx.ROOT, 'config/.upgrade-pending');
+  if (ctx.fs.existsSync(upgradeFlagPath)) {
+    try {
+      upgradePending = JSON.parse(ctx.fs.readFileSync(upgradeFlagPath, 'utf8'));
+    } catch (e) {
+      upgradePending = { error: 'Could not parse .upgrade-pending file' };
+    }
+  }
+
+  // Memory staleness detection
+  var staleMemories = [];
+  if (registry && Array.isArray(registry.agents)) {
+    var memTs = registry.memoryTimestamps || {};
+    var now = Date.now();
+    var memThresholds = {
+      orchestrator: { short: 12, long: 48 },
+      agent: { short: 24, long: 168 }
+    };
+
+    for (var s = 0; s < registry.agents.length; s++) {
+      var ag = registry.agents[s];
+      var agTs = memTs[ag.id] || {};
+      var isOrch = ag.isOrchestrator || ag.id === 'orchestrator';
+      var thresh = isOrch ? memThresholds.orchestrator : memThresholds.agent;
+
+      ['short', 'long'].forEach(function(memType) {
+        var lastUp = agTs[memType];
+        // Fallback: check file mtime if no timestamp recorded
+        if (!lastUp) {
+          var memFile = ctx.path.join(ctx.ROOT, 'agents', ag.id,
+            memType === 'short' ? 'short-memory.md' : 'long-memory.md');
+          try {
+            var mstat = ctx.fs.statSync(memFile);
+            lastUp = mstat.mtime.toISOString();
+          } catch (e) {
+            return; // File doesn't exist, skip
+          }
+        }
+
+        var hoursAgo = (now - new Date(lastUp).getTime()) / (1000 * 60 * 60);
+        if (hoursAgo > thresh[memType]) {
+          staleMemories.push({
+            agentId: ag.id,
+            agentName: ag.name,
+            memoryType: memType,
+            lastUpdated: lastUp,
+            hoursStale: Math.round(hoursAgo),
+            threshold: thresh[memType]
+          });
+        }
+      });
+    }
+  }
+
+  // Orphaned tasks: interrupted tasks in planning status ready for relaunch
+  var orphanedTasks = [];
+  var taskIndexPath = ctx.path.join(ctx.ROOT, 'data/tasks/_index.json');
+  var taskIndex = ctx.readJSON(taskIndexPath);
+  if (taskIndex && Array.isArray(taskIndex.tasks)) {
+    for (var q = 0; q < taskIndex.tasks.length; q++) {
+      var tEntry = taskIndex.tasks[q];
+      if (tEntry.interrupted && tEntry.status === 'planning') {
+        var tPath = ctx.path.join(ctx.ROOT, 'data/tasks', tEntry.id, 'task.json');
+        var tData = ctx.readJSON(tPath);
+        orphanedTasks.push({
+          id: tEntry.id,
+          title: tData ? tData.title : tEntry.title || tEntry.id,
+          assignedTo: tEntry.assignedTo || (tData ? tData.assignedTo : null),
+          interruptedAt: tData ? tData.interruptedAt : null
+        });
+      }
+    }
+  }
+
   var result = {
     status: status,
     issues: issues,
-    checkedAt: new Date().toISOString()
+    staleMemories: staleMemories,
+    orphanedTasks: orphanedTasks,
+    checkedAt: new Date().toISOString(),
+    upgradePending: upgradePending
   };
 
   // Store in system.json

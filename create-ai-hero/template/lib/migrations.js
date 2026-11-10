@@ -49,6 +49,11 @@ function runPendingMigrations(ctx) {
 
   var sysPath = ctx.path.join(ctx.ROOT, 'config/system.json');
   var sys = ctx.readJSON(sysPath) || {};
+  // Replace only the previous product default; preserve users' custom team names.
+  if (sys.teamName === 'TeamHero') {
+    sys.teamName = 'Orchivra';
+    ctx.writeJSON(sysPath, sys);
+  }
   var pkg = ctx.readJSON(ctx.path.join(ctx.ROOT, 'package.json'));
   var currentVersion = sys.version || '0.0.0';
   var targetVersion = pkg ? pkg.version : currentVersion;

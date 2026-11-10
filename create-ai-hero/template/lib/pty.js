@@ -1,9 +1,15 @@
 // ── PTY Terminal Session Manager ─────────────────────────
 // Extracted from server.js - zero behavior change
 
-var pty;
+var pty, ptyLoadError;
 try { pty = require('node-pty'); }
-catch(e) { try { pty = require('node-pty-prebuilt-multiarch'); } catch(e2) { pty = null; } }
+catch(e) {
+  try { pty = require('node-pty-prebuilt-multiarch'); }
+  catch(e2) {
+    pty = null;
+    ptyLoadError = e.message || String(e);
+  }
+}
 
 var termSessions = new Map();
 var MAX_BUFFER = 50 * 1024; // 50KB rolling buffer for reconnect replay
@@ -16,12 +22,26 @@ var MAX_BUFFER = 50 * 1024; // 50KB rolling buffer for reconnect replay
  */
 function createTermSession(sessionId, socket, ctx) {
   if (!pty) {
-    ctx.wsSend(socket, { type: 'terminal-error', error: 'Terminal not available. Run `npm install` in the project directory.' });
+    var errMsg = 'Terminal not available. Run `npm install` in the project directory.';
+    if (process.platform === 'darwin') {
+      errMsg = 'Terminal not available. node-pty failed to compile.\n' +
+        'On Mac, run: xcode-select --install\n' +
+        'Then: cd ' + (ctx.ROOT || '.') + ' && npm install\n' +
+        (ptyLoadError ? 'Error: ' + ptyLoadError : '');
+    } else if (process.platform === 'linux') {
+      errMsg = 'Terminal not available. node-pty failed to compile.\n' +
+        'On Linux, install build tools: sudo apt-get install -y build-essential python3\n' +
+        'Then: cd ' + (ctx.ROOT || '.') + ' && npm install\n' +
+        (ptyLoadError ? 'Error: ' + ptyLoadError : '');
+    } else if (ptyLoadError) {
+      errMsg += '\nError: ' + ptyLoadError;
+    }
+    ctx.wsSend(socket, { type: 'terminal-error', error: errMsg });
     return null;
   }
 
   var isWindows = process.platform === 'win32';
-  var shell = isWindows ? 'cmd.exe' : 'bash';
+  var shell = isWindows ? 'cmd.exe' : (process.env.SHELL || '/bin/zsh');
   var sys = ctx.readJSON(ctx.path.join(ctx.ROOT, 'config/system.json')) || {};
   var permMode = sys.claudePermissionMode || 'autonomous';
   var claudeCmd = permMode === 'supervised' ? 'claude' : 'claude --dangerously-skip-permissions';
@@ -57,6 +77,7 @@ function createTermSession(sessionId, socket, ctx) {
     outputBuffer: '',
     socket: socket,
     timeout: null,
+    restarting: false,
   };
 
   term.onData(function(data) {
@@ -72,6 +93,8 @@ function createTermSession(sessionId, socket, ctx) {
   });
 
   term.onExit(function(ev) {
+    // If restarting for secret injection, skip exit handling (new session already created)
+    if (session.restarting) return;
     if (session.socket) {
       ctx.wsSend(session.socket, { type: 'terminal-exit', code: ev.exitCode });
     }
@@ -179,7 +202,7 @@ function handleTerminalWs(socket, urlObj, ctx) {
             try { s.pty.resize(msg.cols || 120, msg.rows || 30); } catch(e) {}
           } else if (msg.type === 'restart') {
             // Kill existing, create new
-            if (s) { try { s.pty.kill(); } catch(e) {} termSessions.delete(termSessionId); }
+            if (s) { s.restarting = true; try { s.pty.kill(); } catch(e) {} termSessions.delete(termSessionId); }
             termSessionId = ctx.genId();
             var newSession = createTermSession(termSessionId, socket, ctx);
             if (newSession) {
@@ -195,6 +218,35 @@ function handleTerminalWs(socket, urlObj, ctx) {
   socket.on('error', function() { detachTermSession(termSessionId); });
 }
 
+/**
+ * Restart all running PTY sessions so they pick up updated secrets.
+ * Called when vault is unlocked or secrets/credentials are updated.
+ * Kills each existing PTY and spawns a new one with updated env vars.
+ * @param {object} ctx - shared context (same as createTermSession ctx)
+ */
+function injectSecretsIntoTerminals(ctx) {
+  if (termSessions.size === 0) return;
+  var sessionIds = Array.from(termSessions.keys());
+  for (var i = 0; i < sessionIds.length; i++) {
+    var sid = sessionIds[i];
+    var session = termSessions.get(sid);
+    if (!session) continue;
+    var socket = session.socket;
+    // Mark as restarting so onExit handler skips cleanup/shutdown
+    session.restarting = true;
+    // Kill existing PTY
+    try { session.pty.kill(); } catch(e) {}
+    termSessions.delete(sid);
+    // Respawn with fresh env (which now includes updated secrets)
+    if (socket) {
+      var newSession = createTermSession(sid, socket, ctx);
+      if (newSession) {
+        ctx.wsSend(socket, { type: 'terminal-ready', session: sid, reattached: false, secretsUpdated: true });
+      }
+    }
+  }
+}
+
 /** Get the termSessions map (for server control, autopilot, etc.) */
 function getTermSessions() {
   return termSessions;
@@ -206,4 +258,5 @@ module.exports = {
   reattachTermSession,
   handleTerminalWs,
   getTermSessions,
+  injectSecretsIntoTerminals,
 };

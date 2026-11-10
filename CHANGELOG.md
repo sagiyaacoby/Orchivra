@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased — Orchivra rename
+## 3.2.1 — Orchivra rename
 
 - Rename the project, dashboard, documentation, package metadata, and primary installer to Orchivra.
 - Update GitHub links and the updater to the renamed repository.
 - Preserve notification preferences from earlier installations.
 - Replace unverified domain-based contact addresses with GitHub contact routes.
+- Refresh installer templates and rename the default team name on existing installations while preserving custom team names.
 
 All notable changes to Orchivra are documented here.
 

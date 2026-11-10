@@ -2,7 +2,7 @@
 
 Open-source orchestration for AI agent teams.
 
-This project was previously named TeamHero. It has been renamed to Orchivra to avoid confusion with the separate Teamhero personnel-management product. Existing project folders and user data do not need to be renamed.
+Existing project folders and user data do not need to be renamed when upgrading to Orchivra.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933)](https://nodejs.org/)

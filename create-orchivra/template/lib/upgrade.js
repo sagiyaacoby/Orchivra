@@ -10,9 +10,12 @@ var USER_DATA_PATHS = [
   'profile/',
   'temp/',
   'CLAUDE.md',
+  '.mcp.json',
   'config/team-rules.md',
   'config/security-rules.md',
   'config/system.json',
+  'config/agent-os.md',       // generated dynamically - never overwrite
+  'config/autopilot.json',    // user config - never overwrite
 ];
 
 // Legacy list kept for backward compatibility (deprecated - use USER_DATA_PATHS instead)
@@ -325,10 +328,15 @@ async function performUpgrade(ctx, opts) {
       };
     }
 
-    // Step 8: Rebuild CLAUDE.md
+    // Step 8: Rebuild generated files (CLAUDE.md + agent-os.md)
     if (typeof ctx.rebuildClaudeMd === 'function') {
       try { ctx.rebuildClaudeMd(); } catch(e) {
         console.error('  Upgrade: CLAUDE.md rebuild error: ' + e.message);
+      }
+    }
+    if (typeof ctx.rebuildAgentOs === 'function') {
+      try { ctx.rebuildAgentOs(); } catch(e) {
+        console.error('  Upgrade: agent-os.md rebuild error: ' + e.message);
       }
     }
 
@@ -352,6 +360,20 @@ async function performUpgrade(ctx, opts) {
 
     // Step 12: Write upgrade notice
     writeUpgradeNotice(ctx, fromVersion, toVersion, migrationsResult.ran, extraction.count, check.releaseNotes);
+
+    // Step 13: Write upgrade-pending flag for orchestrator health check
+    try {
+      var upgradeFlagPath = ctx.path.join(ctx.ROOT, 'config/.upgrade-pending');
+      ctx.fs.writeFileSync(upgradeFlagPath, JSON.stringify({
+        version: toVersion,
+        previousVersion: fromVersion,
+        upgradeDate: new Date().toISOString(),
+        migrationsRun: migrationsResult.ran,
+        filesUpdated: extraction.count
+      }, null, 2));
+    } catch (e) {
+      console.error('  Upgrade: Could not write .upgrade-pending flag: ' + e.message);
+    }
 
     console.log('  Upgrade: Complete. v' + fromVersion + ' -> v' + toVersion);
 

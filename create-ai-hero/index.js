@@ -6,7 +6,7 @@ var path = require('path');
 var { execSync, spawnSync } = require('child_process');
 var readline = require('readline');
 
-var VERSION = '2.8.2';
+var VERSION = '3.2.1';
 
 // ── Colors ──
 var c = {
@@ -159,7 +159,7 @@ if (!hasClaude) {
   log('');
 }
 
-log('  The dashboard will open at ' + c.cyan + 'http://localhost:3796' + c.reset);
+log('  The dashboard will open at ' + c.cyan + 'the address printed by the server' + c.reset);
 log('  Complete the setup wizard, then ask your orchestrator to build a team.');
 log('');
 

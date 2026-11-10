@@ -1,6 +1,15 @@
 (function() {
   'use strict';
 
+  // Preserve preferences saved before the product rename.
+  ['browser', 'sound'].forEach(function(kind) {
+    var currentKey = 'orchivra-notifications-' + kind;
+    var previousKey = 'teamhero-notifications-' + kind;
+    if (localStorage.getItem(currentKey) === null && localStorage.getItem(previousKey) !== null) {
+      localStorage.setItem(currentKey, localStorage.getItem(previousKey));
+    }
+  });
+
   // ── State ──────────────────────────────────────────
   let state = {
     currentView: 'dashboard',
@@ -14,20 +23,25 @@
     previousAgentId: null,
     currentTaskId: null,
     mediaFilter: 'all',
-    dashboardTaskFilter: 'all',
-    agentTaskFilter: 'all',
+    dashboardTaskFilter: 'pending',
+    agentTaskFilter: 'pending',
     cachedDashboardTasks: [],
     cachedAgentTasks: [],
     dashboardViewMode: 'hierarchy',
     agentViewMode: 'hierarchy',
     hierarchyExpanded: {},
     flowExpanded: {},
-    dashboardSort: JSON.parse(localStorage.getItem('dashboardSort') || '{"new":true,"priority":false}'),
-    agentSort: JSON.parse(localStorage.getItem('agentSort') || '{"new":true,"priority":false}'),
+    dashboardSort: (function() { var s = JSON.parse(localStorage.getItem('dashboardSort') || '{"updated":true,"priority":false}'); if ('new' in s) { s.updated = s['new']; delete s['new']; localStorage.setItem('dashboardSort', JSON.stringify(s)); } return s; })(),
+    agentSort: (function() { var s = JSON.parse(localStorage.getItem('agentSort') || '{"updated":true,"priority":false}'); if ('new' in s) { s.updated = s['new']; delete s['new']; localStorage.setItem('agentSort', JSON.stringify(s)); } return s; })(),
     dashboardAgentFilter: null,
     agentAgentFilter: null,
+    dashboardTextFilter: '',
+    agentTextFilter: '',
+    dashboardTimeFilter: 'all',
+    agentTimeFilter: 'all',
     tagsVisible: localStorage.getItem('tagsVisible') !== 'false',
     tagFilterExpanded: false,
+    globalAutopilot: false,
   };
 
   var PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
@@ -46,6 +60,13 @@
     if (days < 30) return days + 'd ago';
     var months = Math.floor(days / 30);
     return months + 'mo ago';
+  }
+
+  function formatTokenCount(n) {
+    if (!n || n <= 0) return '';
+    if (n < 1000) return n.toString();
+    if (n < 1000000) return Math.round(n / 1000) + 'K';
+    return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
   }
 
   // ── API Client ─────────────────────────────────────
@@ -210,8 +231,11 @@
       if (viewId === 'media') loadMedia();
       if (viewId === 'skills') loadSkills();
       if (viewId === 'knowledge') loadKnowledge();
+      if (viewId === 'mind-map') loadMindMap();
       if (viewId === 'help') loadHelp(0);
+      if (viewId === 'planner') loadPlannerPage();
       if (viewId === 'autopilot') loadAutopilotPage();
+      if (viewId === 'terms') loadTerms();
     }
 
     // Update hash unless this navigation was triggered by hashchange
@@ -306,6 +330,234 @@
   var globalWs = null;
   var wsReconnectTimer = null;
 
+  // ── Notification System ─────────────────────────────
+  var notifications = [];
+  var notifUnreadCount = 0;
+  var notifSoundLastPlayed = 0;
+  var NOTIF_SOUND_DEBOUNCE = 5000;
+
+  function addNotification(type, data) {
+    var priorityMap = { 'task.pending_approval': 'high', 'task.blocker': 'high', 'task.interrupted': 'high', 'task.scheduled_fired': 'high', 'task.done': 'medium', 'task.closed': 'low' };
+    var iconMap = { 'task.pending_approval': '\u2610', 'task.blocker': '\u26A0', 'task.done': '\u2714', 'task.closed': '\u2500', 'task.interrupted': '\u26A0', 'task.scheduled_fired': '\u23F0' };
+    var textMap = {
+      'task.pending_approval': (data.agentName || 'Agent') + ' submitted "' + (data.title || 'task') + '" for review',
+      'task.blocker': (data.agentName || 'Agent') + ' hit a blocker on "' + (data.title || 'task') + '"',
+      'task.interrupted': 'Agent ' + (data.agentName || 'unknown') + ' appears disconnected. Task "' + (data.title || 'task') + '" is stalled.',
+      'task.scheduled_fired': 'Scheduled task "' + (data.title || 'task') + '" has fired' + (data.failed ? ' (no terminal available)' : ' and needs agent execution'),
+      'task.done': (data.agentName || 'Agent') + ' completed "' + (data.title || 'task') + '"',
+      'task.closed': '"' + (data.title || 'Task') + '" has been closed'
+    };
+    var priority = priorityMap[type] || 'low';
+    var notif = {
+      id: 'n-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+      type: type,
+      priority: priority,
+      title: textMap[type] || type,
+      detail: data.reason || '',
+      taskId: data.taskId || null,
+      timestamp: new Date().toISOString(),
+      read: false
+    };
+    notifications.unshift(notif);
+    if (notifications.length > 100) notifications = notifications.slice(0, 100);
+    notifUnreadCount++;
+    renderNotifications();
+    animateBell();
+    persistNotification(notif);
+    if (priority === 'high') {
+      sendBrowserNotification(notif);
+      playNotifSound();
+    }
+  }
+
+  function renderNotifications() {
+    var badges = document.querySelectorAll('.notif-badge');
+    var bells = document.querySelectorAll('.notif-bell');
+    var list = document.getElementById('notif-list');
+    for (var b = 0; b < badges.length; b++) {
+      if (notifUnreadCount > 0) {
+        badges[b].style.display = '';
+        badges[b].textContent = notifUnreadCount > 99 ? '99+' : notifUnreadCount;
+      } else {
+        badges[b].style.display = 'none';
+      }
+    }
+    for (var b = 0; b < bells.length; b++) {
+      if (notifUnreadCount > 0) {
+        bells[b].classList.add('has-unread');
+      } else {
+        bells[b].classList.remove('has-unread');
+      }
+    }
+    if (!list) return;
+    if (notifications.length === 0) {
+      list.innerHTML = '<div class="notif-empty">No notifications</div>';
+      return;
+    }
+    var iconMap = { 'task.pending_approval': '\u2610', 'task.blocker': '\u26A0', 'task.done': '\u2714', 'task.closed': '\u2500', 'task.interrupted': '\u26A0', 'interrupted': '\u26A0', 'task.scheduled_fired': '\u23F0', 'scheduled_fired': '\u23F0' };
+    var statusColorMap = { 'task.blocker': 'notif-status-blocker', 'task.done': 'notif-status-done', 'task.pending_approval': 'notif-status-pending', 'task.closed': 'notif-status-closed', 'task.interrupted': 'notif-status-interrupted', 'interrupted': 'notif-status-interrupted', 'task.scheduled_fired': 'notif-status-scheduled', 'scheduled_fired': 'notif-status-scheduled' };
+    var html = '';
+    for (var i = 0; i < notifications.length; i++) {
+      var n = notifications[i];
+      var statusClass = statusColorMap[n.type] || 'notif-status-default';
+      html += '<div class="notif-item ' + (n.read ? '' : 'unread ') + statusClass + '" data-index="' + i + '">' +
+        '<span class="notif-item-icon">' + (iconMap[n.type] || '\u25CF') + '</span>' +
+        '<div class="notif-item-body" onclick="App.clickNotification(' + i + ')">' +
+        '<div class="notif-item-text">' + escHtml(n.title) + '</div>' +
+        (n.detail ? '<div class="notif-item-text" style="color:var(--text-dim);font-size:11px">' + escHtml(n.detail) + '</div>' : '') +
+        '<div class="notif-item-time">' + timeAgo(n.timestamp) + '</div>' +
+        '</div>' +
+        '<button class="notif-dismiss-btn" onclick="event.stopPropagation();App.dismissNotification(' + i + ')" title="Dismiss">&times;</button>' +
+        '</div>';
+    }
+    list.innerHTML = html;
+  }
+
+  function animateBell() {
+    var bells = document.querySelectorAll('.notif-bell');
+    for (var i = 0; i < bells.length; i++) {
+      bells[i].classList.remove('pulse');
+      void bells[i].offsetWidth;
+      bells[i].classList.add('pulse');
+    }
+  }
+
+  function toggleNotifications(e) {
+    var dd = document.getElementById('notif-dropdown');
+    if (!dd) return;
+    if (dd.style.display === 'none') {
+      dd.style.display = 'flex';
+      // Position dropdown relative to the clicked bell using fixed positioning
+      var bell = e ? e.target.closest('.notif-bell') : null;
+      if (!bell) {
+        // Fallback: find the visible bell
+        var bells = document.querySelectorAll('.notif-bell');
+        for (var i = 0; i < bells.length; i++) {
+          if (bells[i].offsetParent !== null) { bell = bells[i]; break; }
+        }
+      }
+      if (bell) {
+        var rect = bell.getBoundingClientRect();
+        dd.style.top = (rect.bottom + 6) + 'px';
+        dd.style.left = Math.max(8, rect.left) + 'px';
+      }
+      renderNotifications();
+    } else {
+      dd.style.display = 'none';
+    }
+  }
+
+  function clickNotification(index) {
+    if (index >= 0 && index < notifications.length) {
+      var n = notifications[index];
+      if (!n.read) { n.read = true; notifUnreadCount = Math.max(0, notifUnreadCount - 1); }
+      renderNotifications();
+      if (n.taskId) {
+        document.getElementById('notif-dropdown').style.display = 'none';
+        openTask(n.taskId);
+      }
+    }
+  }
+
+  function dismissNotification(index) {
+    if (index >= 0 && index < notifications.length) {
+      var n = notifications[index];
+      if (!n.read) notifUnreadCount = Math.max(0, notifUnreadCount - 1);
+      var nid = n.id;
+      notifications.splice(index, 1);
+      renderNotifications();
+      fetch('/api/notifications/' + nid, { method: 'DELETE' }).catch(function() {});
+    }
+  }
+
+  function clearAllNotifications() {
+    notifications = [];
+    notifUnreadCount = 0;
+    renderNotifications();
+    fetch('/api/notifications', { method: 'DELETE' }).catch(function() {});
+  }
+
+  // Browser Notifications
+  function sendBrowserNotification(notif) {
+    if (localStorage.getItem('orchivra-notifications-browser') === 'false') return;
+    if (!document.hidden) return;
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted') {
+      var bn = new Notification('Orchivra', {
+        body: notif.title,
+        icon: '/favicon.ico',
+        tag: 'orchivra-' + (notif.taskId || notif.id),
+        requireInteraction: false
+      });
+      bn.onclick = function() {
+        window.focus();
+        if (notif.taskId) openTask(notif.taskId);
+        bn.close();
+      };
+    } else if (Notification.permission !== 'denied') {
+      Notification.requestPermission();
+    }
+  }
+
+  // Sound Alerts
+  function playNotifSound() {
+    if (localStorage.getItem('orchivra-notifications-sound') === 'false') return;
+    var now = Date.now();
+    if (now - notifSoundLastPlayed < NOTIF_SOUND_DEBOUNCE) return;
+    notifSoundLastPlayed = now;
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.3);
+      setTimeout(function() { ctx.close(); }, 500);
+    } catch(e) {}
+  }
+
+  // Settings: load notification prefs
+  function loadNotifPrefs() {
+    var br = document.getElementById('notif-toggle-browser');
+    var snd = document.getElementById('notif-toggle-sound');
+    if (br) br.checked = localStorage.getItem('orchivra-notifications-browser') !== 'false';
+    if (snd) snd.checked = localStorage.getItem('orchivra-notifications-sound') !== 'false';
+  }
+
+  function saveNotifPrefs() {
+    var br = document.getElementById('notif-toggle-browser');
+    var snd = document.getElementById('notif-toggle-sound');
+    if (br) localStorage.setItem('orchivra-notifications-browser', br.checked ? 'true' : 'false');
+    if (snd) localStorage.setItem('orchivra-notifications-sound', snd.checked ? 'true' : 'false');
+    if (br && br.checked && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }
+
+  function persistNotification(notif) {
+    fetch('/api/notifications', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(notif) }).catch(function() {});
+  }
+
+  async function loadNotificationsFromServer() {
+    try {
+      var stored = await api.get('/api/notifications');
+      if (Array.isArray(stored) && stored.length > 0) {
+        notifications = stored;
+        notifUnreadCount = 0;
+        for (var i = 0; i < notifications.length; i++) {
+          if (!notifications[i].read) notifUnreadCount++;
+        }
+        renderNotifications();
+      }
+    } catch(e) {}
+  }
+
   // ── Terminal State ──────────────────────────────────
   var terminal = null;
   var fitAddon = null;
@@ -333,6 +585,15 @@
         var data = JSON.parse(evt.data);
         if (data.type === 'refresh') {
           handleRefresh(data.scope);
+        } else if (data.type === 'agent-activity') {
+          // Update agent activity state in sidebar
+          if (data.agentId) {
+            var agentInState = state.agents.find(function(a) { return a.id === data.agentId; });
+            if (agentInState) agentInState.active = data.active;
+            renderSidebarAgents();
+          }
+        } else if (data.type === 'event' && data.event) {
+          addNotification(data.event, data.data || {});
         }
       } catch(e) {
         console.error('WS parse error:', e);
@@ -378,6 +639,89 @@
     }, delay);
   }
 
+  // Check if user is actively interacting with the task detail view
+  function isTaskDetailUserActive() {
+    if (state.currentView !== 'task-detail') return false;
+    // Check if any input/textarea in the task detail view has focus
+    var active = document.activeElement;
+    if (active) {
+      var tag = (active.tagName || '').toLowerCase();
+      if (tag === 'textarea' || tag === 'input' || tag === 'select' || active.isContentEditable) {
+        var taskView = document.getElementById('view-task-detail');
+        if (taskView && taskView.contains(active)) return true;
+      }
+    }
+    // Check if feedback area is visible and has content
+    var feedbackArea = document.getElementById('task-feedback-area');
+    if (feedbackArea && !feedbackArea.classList.contains('hidden')) {
+      var textarea = document.getElementById('task-review-comments');
+      if (textarea && textarea.value.trim().length > 0) return true;
+    }
+    // Check if any file preview feedback textarea has content
+    var previewTextareas = document.querySelectorAll('.file-preview-feedback-textarea');
+    for (var i = 0; i < previewTextareas.length; i++) {
+      if (previewTextareas[i].value && previewTextareas[i].value.trim().length > 0) return true;
+    }
+    return false;
+  }
+
+  // Lightweight update for task detail - updates status/priority badges without full re-render
+  async function softRefreshTaskDetail(taskId) {
+    try {
+      var task = await api.get('/api/tasks/' + taskId);
+      // Update status badge
+      var statusEl = document.getElementById('task-detail-status');
+      if (statusEl) {
+        var displayStatus = task.status || 'planning';
+        var statusLabel = STATUS_LABELS[displayStatus] || displayStatus.replace(/_/g, ' ');
+        if (displayStatus === 'working') {
+          statusEl.innerHTML = escHtml(statusLabel) + ' <span class="agent-working-dot"></span>';
+        } else {
+          statusEl.textContent = statusLabel;
+        }
+        statusEl.className = 'badge badge-' + displayStatus;
+      }
+      // Update priority badge
+      var priorityEl = document.getElementById('task-detail-priority');
+      if (priorityEl) {
+        priorityEl.textContent = task.priority || 'medium';
+        priorityEl.className = 'badge badge-' + (task.priority || 'medium');
+      }
+      // Update title
+      var titleEl = document.getElementById('task-detail-title');
+      if (titleEl) titleEl.textContent = task.title || 'Untitled';
+      // Update blocker banner - add or remove based on current blocker state
+      var sessionEl = document.getElementById('task-session');
+      if (sessionEl) {
+        var existingBanner = sessionEl.querySelector('.blocker-banner');
+        if (task.blocker && !existingBanner) {
+          // Blocker was set - insert banner at the top of the session container
+          var bannerHtml = '<div class="blocker-banner">' +
+            '<span class="blocker-banner-icon">&#9888;</span>' +
+            '<span class="blocker-banner-text"><strong>BLOCKER:</strong> ' + linkifyText(escHtml(task.blocker)) + '</span>' +
+            '</div>';
+          sessionEl.insertAdjacentHTML('afterbegin', bannerHtml);
+        } else if (!task.blocker && existingBanner) {
+          // Blocker was cleared - remove the banner
+          existingBanner.remove();
+        } else if (task.blocker && existingBanner) {
+          // Blocker text changed - update it
+          var textEl = existingBanner.querySelector('.blocker-banner-text');
+          if (textEl) textEl.innerHTML = '<strong>BLOCKER:</strong> ' + linkifyText(escHtml(task.blocker));
+        }
+      }
+      // Keep currentTask in sync for consistent subsequent renders
+      if (state.currentTask && state.currentTask.id === taskId) {
+        state.currentTask.blocker = task.blocker;
+        state.currentTask.status = task.status;
+        state.currentTask.priority = task.priority;
+        state.currentTask.title = task.title;
+      }
+    } catch(e) {
+      // Soft refresh failed - not critical, full refresh will happen when user finishes editing
+    }
+  }
+
   function doRefresh(scope) {
     // Always update sidebar (agents, pending badge, working indicators)
     loadSidebarAgents();
@@ -390,7 +734,14 @@
     if (scope === 'all' || scope === 'agents' || scope === 'tasks') {
       if (v === 'dashboard') loadDashboard();
       if (v === 'agent-detail' && state.currentAgentId) loadAgentDetail(state.currentAgentId);
-      if (v === 'task-detail' && state.currentTaskId) openTask(state.currentTaskId);
+      if (v === 'task-detail' && state.currentTaskId) {
+        // Skip full re-render if user is actively typing/editing - preserve their input
+        if (isTaskDetailUserActive()) {
+          softRefreshTaskDetail(state.currentTaskId);
+        } else {
+          openTask(state.currentTaskId);
+        }
+      }
     }
     if (scope === 'all' || scope === 'agents') {
       if (v === 'settings') loadSettings();
@@ -410,11 +761,21 @@
     if (scope === 'all' || scope === 'knowledge') {
       if (v === 'knowledge') loadKnowledge();
       if (v === 'knowledge-detail' && state._currentKnowledgeId) openKnowledgeDoc(state._currentKnowledgeId);
+      if (v === 'mind-map') loadMindMap();
+    }
+    if (scope === 'all' || scope === 'planner' || scope === 'tasks') {
+      if (v === 'planner') loadPlannerPage();
     }
     if (scope === 'all' || scope === 'autopilot' || scope === 'tasks') {
       if (v === 'autopilot') loadAutopilotPage();
     }
-    if (scope === 'all') {
+    if (scope === 'all' || scope === 'config') {
+      loadGlobalAutopilot();
+      if (v === 'settings') renderModelRoutingSettings();
+      // Refresh model routing state for sidebar badges
+      loadModelRoutingState();
+    }
+    if (scope === 'all' || scope === 'media') {
       if (v === 'media') loadMedia();
     }
   }
@@ -428,6 +789,10 @@
       ]);
       state.agents = agentsData.agents || [];
       state.tasks = tasksData.tasks || [];
+      // Load model routing config for sidebar badges
+      if (!state.modelRouting) {
+        try { state.modelRouting = await api.get('/api/settings/model-routing'); } catch(e2) { state.modelRouting = { mode: 'default' }; }
+      }
       renderSidebarAgents();
     } catch(e) { console.error('Failed to load agents:', e); }
   }
@@ -443,30 +808,61 @@
     var orchAgents = state.agents.filter(function(a) { return a.isOrchestrator; });
     var subAgents = state.agents.filter(function(a) { return !a.isOrchestrator; });
 
-    // Build set of agents with working tasks
-    var workingAgents = {};
+    // Build agent dot state: 'blocked' (red pulse), 'pending' (yellow pulse), 'active' (green pulse), or undefined (no dot)
+    var agentDotState = {};
+    var workingStatuses = { planning: true, working: true, in_progress: true };
+    // Group tasks by agent (only working/planning/pending_approval + blocker tasks)
+    var agentTaskMap = {};
     (state.tasks || []).forEach(function(t) {
-      if (t.status === 'working' && t.assignedTo) workingAgents[t.assignedTo] = true;
+      if (!t.assignedTo) return;
+      if (!workingStatuses[t.status] && t.status !== 'pending_approval' && !(t.blocker && t.status !== 'done' && t.status !== 'closed' && t.status !== 'cancelled')) return;
+      if (!agentTaskMap[t.assignedTo]) agentTaskMap[t.assignedTo] = [];
+      agentTaskMap[t.assignedTo].push(t);
+    });
+    // Determine dot state per agent: blocked > interrupted > pending > active > no dot
+    Object.keys(agentTaskMap).forEach(function(agentId) {
+      var tasks = agentTaskMap[agentId];
+      var anyBlocked = tasks.some(function(t) { return !!t.blocker && t.status !== 'cancelled' && t.status !== 'closed' && t.status !== 'done'; });
+      var anyInterrupted = tasks.some(function(t) { return !!t.interrupted && (t.status === 'working' || t.status === 'planning'); });
+      var anyPending = tasks.some(function(t) { return t.status === 'pending_approval'; });
+      var anyActive = tasks.some(function(t) { return !!workingStatuses[t.status]; });
+      if (anyBlocked) agentDotState[agentId] = 'blocked';
+      else if (anyInterrupted) agentDotState[agentId] = 'interrupted';
+      else if (anyPending) agentDotState[agentId] = 'pending';
+      else if (anyActive) agentDotState[agentId] = 'active';
+    });
+    // Also include agents with active activity state from API
+    state.agents.forEach(function(a) {
+      if (a.active && !agentDotState[a.id]) agentDotState[a.id] = 'active';
     });
 
     var html = '';
 
     orchAgents.forEach(function(a) {
       var isActive = state.currentView === 'agent-detail' && state.currentAgentId === a.id;
-      var dotClass = 'agent-dot' + (workingAgents[a.id] ? ' agent-dot-working' : '');
-      var dotTitle = workingAgents[a.id] ? 'Working on task' : 'Idle';
+      var ds = agentDotState[a.id];
+      var dotClass = ds === 'blocked' ? 'agent-dot agent-dot-blocked' : ds === 'interrupted' ? 'agent-dot agent-dot-interrupted' : ds === 'pending' ? 'agent-dot agent-dot-pending' : ds === 'active' ? 'agent-dot agent-dot-working' : 'agent-dot agent-dot-idle';
+      var dotTitle = ds === 'blocked' ? 'Has blocked task' : ds === 'interrupted' ? 'Agent disconnected' : ds === 'pending' ? 'Awaiting approval' : ds === 'active' ? 'Working on task' : '';
       var nameHtml = escHtml(a.name);
       if (a.role || a.mission) {
         nameHtml = '<span data-tooltip="' + escHtml((a.role || '') + (a.role && a.mission ? '\n' : '') + (a.mission || '')) + '">' + escHtml(a.name) + '</span>';
       }
+      var orchBadge = '';
+      if (state.modelRouting && state.modelRouting.mode !== 'default') {
+        var orchModel = (state.modelRouting.orchestratorModel) || ((state.modelRouting.agentModels || {})[a.id]);
+        if (orchModel && MODEL_DISPLAY[orchModel]) {
+          orchBadge = '<span class="model-badge model-badge-' + orchModel + '" title="' + MODEL_DISPLAY[orchModel] + '">[' + orchModel[0].toUpperCase() + ']</span>';
+        }
+      }
       html += '<a href="#" data-agent-id="' + a.id + '" class="nav-link nav-orchestrator' + (isActive ? ' active' : '') + '">' +
-        '<span class="icon">&#9733;</span> ' + nameHtml + '<span class="' + dotClass + '" title="' + dotTitle + '"></span></a>';
+        '<span class="icon">&#9733;</span> ' + nameHtml + orchBadge + '<span class="' + dotClass + '" title="' + dotTitle + '"></span></a>';
     });
 
     subAgents.forEach(function(a) {
       var isActive = state.currentView === 'agent-detail' && state.currentAgentId === a.id;
-      var dotClass = 'agent-dot' + (workingAgents[a.id] ? ' agent-dot-working' : '');
-      var dotTitle = workingAgents[a.id] ? 'Working on task' : 'Idle';
+      var ds = agentDotState[a.id];
+      var dotClass = ds === 'blocked' ? 'agent-dot agent-dot-blocked' : ds === 'interrupted' ? 'agent-dot agent-dot-interrupted' : ds === 'pending' ? 'agent-dot agent-dot-pending' : ds === 'active' ? 'agent-dot agent-dot-working' : 'agent-dot agent-dot-idle';
+      var dotTitle = ds === 'blocked' ? 'Has blocked task' : ds === 'interrupted' ? 'Agent disconnected' : ds === 'pending' ? 'Awaiting approval' : ds === 'active' ? 'Working on task' : '';
       var nameHtml = escHtml(a.name);
       if (a.role || a.mission) {
         nameHtml = '<span data-tooltip="' + escHtml((a.role || '') + (a.role && a.mission ? '\n' : '') + (a.mission || '')) + '">' + escHtml(a.name) + '</span>';
@@ -475,8 +871,15 @@
       html += '<div class="nav-agent-group">';
       html += '<div class="nav-agent-row">';
       html += '<span class="nav-agent-arrow' + (isExpanded ? ' expanded' : '') + '" data-agent-id="' + a.id + '" title="Show files">&#9654;</span>';
+      var agentBadge = '';
+      if (state.modelRouting && state.modelRouting.mode !== 'default') {
+        var agentModel = (state.modelRouting.agentModels || {})[a.id];
+        if (agentModel && MODEL_DISPLAY[agentModel]) {
+          agentBadge = '<span class="model-badge model-badge-' + agentModel + '" title="' + MODEL_DISPLAY[agentModel] + '">[' + agentModel[0].toUpperCase() + ']</span>';
+        }
+      }
       html += '<a href="#" data-agent-id="' + a.id + '" class="nav-link' + (isActive ? ' active' : '') + '" style="flex:1">' +
-        nameHtml + '<span class="' + dotClass + '" title="' + dotTitle + '"></span></a>';
+        nameHtml + agentBadge + '<span class="' + dotClass + '" title="' + dotTitle + '"></span></a>';
       html += '</div>';
       var countText = state.agentFileCounts && state.agentFileCounts[a.id] != null ? state.agentFileCounts[a.id] : '-';
       html += '<div class="nav-agent-sub' + (isExpanded ? '' : ' hidden') + '" data-agent-sub="' + a.id + '">';
@@ -494,11 +897,15 @@
       addAgentLink.closest('li').style.display = orchAgents.length > 0 ? '' : 'none';
     }
 
-    // Update pending count badge on Dashboard nav
+    // Update pending and working count badges
     var pendingCount = 0;
+    var workingCount = 0;
     (state.tasks || []).forEach(function(t) {
       if (t.status === 'pending_approval') pendingCount++;
+      if (t.status === 'working' || t.status === 'planning') workingCount++;
     });
+
+    // Dashboard nav badge (pending)
     var dashLink = document.querySelector('[data-view="dashboard"]');
     if (dashLink) {
       var badge = dashLink.querySelector('.nav-badge');
@@ -513,37 +920,62 @@
         badge.remove();
       }
     }
+
+    // Header status bubbles
+    var pendingBubble = document.getElementById('header-pending-bubble');
+    var workingBubble = document.getElementById('header-working-bubble');
+    if (pendingBubble) {
+      if (pendingCount > 0) {
+        pendingBubble.textContent = pendingCount;
+        pendingBubble.style.display = 'flex';
+      } else {
+        pendingBubble.style.display = 'none';
+      }
+    }
+    if (workingBubble) {
+      if (workingCount > 0) {
+        workingBubble.textContent = workingCount;
+        workingBubble.style.display = 'flex';
+      } else {
+        workingBubble.style.display = 'none';
+      }
+    }
+
     updateAutopilotBadge();
+    updatePlannerBadge();
   }
 
   // ── Dashboard ──────────────────────────────────────
   async function loadDashboard() {
     try {
-      const [agentsData, tasksData] = await Promise.all([
+      const [agentsData, tasksData, archiveData] = await Promise.all([
         api.get('/api/agents'),
         api.get('/api/tasks'),
+        api.get('/api/tasks?include=archive'),
       ]);
       state.agents = agentsData.agents || [];
       state.tasks = tasksData.tasks || [];
       renderSidebarAgents();
 
       document.getElementById('stat-agents').textContent = state.agents.length;
-      var working = 0, pending = 0, done = 0, closed = 0;
-      state.tasks.forEach(function(t) {
-        // Pending counts ALL tasks (including subtasks) - owner must see everything needing review
-        if (t.status === 'pending_approval') { pending++; return; }
-        // Other stats count top-level only
-        if (t.parentTaskId) return;
-        if (t.status === 'working' || t.status === 'planning') working++;
-        else if (t.status === 'done') done++;
-        else if (t.status === 'closed') closed++;
+      var pendingCount = 0, workingCount = 0, doneCount = 0, holdCount = 0, cancelledCount = 0, closedCount = 0;
+      // Use merged (active + archive) data for closed/cancelled counts
+      var allTasks = (archiveData && archiveData.tasks) || state.tasks;
+      allTasks.forEach(function(t) {
+        // Count ALL tasks including subtasks - subtasks can have different status from parent
+        if (t.status === 'planning' || t.status === 'pending_approval') pendingCount++;
+        else if (t.status === 'working') workingCount++;
+        else if (t.status === 'done') doneCount++;
+        else if (t.status === 'hold') holdCount++;
+        else if (t.status === 'cancelled') cancelledCount++;
+        else if (t.status === 'closed') closedCount++;
       });
-      document.getElementById('stat-total').textContent = state.tasks.filter(function(t) { return !t.parentTaskId && t.status !== 'closed' && t.status !== 'done' && t.status !== 'cancelled' && t.status !== 'hold'; }).length;
-      document.getElementById('stat-hold').textContent = state.tasks.filter(function(t) { return !t.parentTaskId && t.status === 'hold'; }).length;
-      document.getElementById('stat-working').textContent = working;
-      document.getElementById('stat-pending').textContent = pending;
-      document.getElementById('stat-done').textContent = done;
-      document.getElementById('stat-closed').textContent = closed;
+      document.getElementById('stat-pending').textContent = pendingCount;
+      document.getElementById('stat-working').textContent = workingCount;
+      document.getElementById('stat-done').textContent = doneCount;
+      document.getElementById('stat-hold').textContent = holdCount;
+      document.getElementById('stat-cancelled').textContent = cancelledCount;
+      document.getElementById('stat-closed').textContent = closedCount;
       // Highlight active filter stat card
       document.querySelectorAll('.stat-card[data-filter]').forEach(function(card) {
         card.classList.toggle('stat-card-active', card.dataset.filter === state.dashboardTaskFilter);
@@ -559,6 +991,7 @@
       renderFilteredTasks('dashboard');
 
       loadRoundTable();
+      renderTeamPerformance();
     } catch(e) { console.error('Dashboard load error:', e); }
   }
 
@@ -616,6 +1049,24 @@
         deleteBtn.style.display = agent.isOrchestrator ? 'none' : '';
       }
 
+      // Model routing integration
+      var modelBar = document.getElementById('agent-model-bar');
+      if (modelBar) {
+        if (agent.isOrchestrator) {
+          modelBar.style.display = 'none';
+        } else {
+          modelBar.style.display = 'flex';
+          try {
+            var routingConfig = state.modelRouting || await api.get('/api/settings/model-routing');
+            state.modelRouting = routingConfig;
+            var select = document.getElementById('agent-model-select');
+            var currentModel = (routingConfig.agentModels || {})[id] || '';
+            if (select) select.value = currentModel;
+            updateAgentModelInfo(routingConfig);
+          } catch(re) { console.error('Model routing load error:', re); }
+        }
+      }
+
       // Fetch tasks assigned to this agent
       try {
         var tasksData = await api.get('/api/tasks');
@@ -639,23 +1090,38 @@
     var summaryEl = document.getElementById('agent-tasks-summary');
     if (!summaryEl) return;
 
-    var working = 0, pending = 0, done = 0, closed = 0, hold = 0;
+    var pendingA = 0, workingA = 0, doneA = 0, holdA = 0, cancelledA = 0, closedA = 0;
     tasks.forEach(function(t) {
-      if (t.status === 'working' || t.status === 'planning') working++;
-      else if (t.status === 'pending_approval') pending++;
-      else if (t.status === 'done') done++;
-      else if (t.status === 'closed') closed++;
-      else if (t.status === 'hold') hold++;
+      // Count ALL tasks including subtasks - subtasks can have different status from parent
+      if (t.status === 'planning' || t.status === 'pending_approval') pendingA++;
+      else if (t.status === 'working') workingA++;
+      else if (t.status === 'done') doneA++;
+      else if (t.status === 'hold') holdA++;
+      else if (t.status === 'cancelled') cancelledA++;
+      else if (t.status === 'closed') closedA++;
     });
+    // Auto-select first non-empty filter so user always sees tasks
+    var filterCounts = [
+      { key: 'pending', count: pendingA },
+      { key: 'working', count: workingA },
+      { key: 'done', count: doneA },
+      { key: 'hold', count: holdA },
+      { key: 'cancelled', count: cancelledA },
+      { key: 'closed', count: closedA }
+    ];
+    var currentFilterCount = filterCounts.filter(function(f) { return f.key === state.agentTaskFilter; });
+    if (currentFilterCount.length === 0 || currentFilterCount[0].count === 0) {
+      var firstNonEmpty = filterCounts.filter(function(f) { return f.count > 0; })[0];
+      if (firstNonEmpty) state.agentTaskFilter = firstNonEmpty.key;
+    }
     var af = state.agentTaskFilter;
-    var total = tasks.filter(function(t) { return t.status !== 'closed' && t.status !== 'done' && t.status !== 'cancelled' && t.status !== 'hold'; }).length;
     summaryEl.innerHTML =
-      '<span class="badge badge-all clickable-badge' + (af === 'all' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'all\',\'agent\')">' + total + ' Active</span> ' +
-      '<span class="badge badge-pending_approval clickable-badge' + (af === 'pending_approval' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'pending_approval\',\'agent\')">' + pending + ' Pending</span> ' +
-      '<span class="badge badge-working clickable-badge' + (af === 'working' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'working\',\'agent\')">' + working + ' Working</span> ' +
-      '<span class="badge badge-done clickable-badge' + (af === 'done' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'done\',\'agent\')">' + done + ' Done</span> ' +
-      '<span class="badge badge-hold clickable-badge' + (af === 'hold' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'hold\',\'agent\')">' + hold + ' Hold</span> ' +
-      '<span class="badge badge-closed clickable-badge' + (af === 'closed' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'closed\',\'agent\')">' + closed + ' Closed</span>';
+      '<span class="badge badge-pending_approval clickable-badge' + (af === 'pending' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'pending\',\'agent\')">' + pendingA + ' Pending</span> ' +
+      '<span class="badge badge-working clickable-badge' + (af === 'working' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'working\',\'agent\')">' + workingA + ' Working</span> ' +
+      '<span class="badge badge-done clickable-badge' + (af === 'done' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'done\',\'agent\')">' + doneA + ' Done</span> ' +
+      '<span class="badge badge-hold clickable-badge' + (af === 'hold' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'hold\',\'agent\')">' + holdA + ' Hold</span> ' +
+      '<span class="badge badge-cancelled clickable-badge' + (af === 'cancelled' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'cancelled\',\'agent\')">' + cancelledA + ' Cancelled</span> ' +
+      '<span class="badge badge-closed clickable-badge' + (af === 'closed' ? ' badge-active-filter' : '') + '" onclick="App.filterTasks(\'closed\',\'agent\')">' + closedA + ' Closed</span>';
 
     state.cachedAgentTasks = tasks;
     updateSortButtons('agent');
@@ -667,17 +1133,22 @@
     var tasks = context === 'dashboard' ? state.cachedDashboardTasks : state.cachedAgentTasks;
 
     var filtered;
-    if (filter === 'all') {
-      filtered = tasks.filter(function(t) { return !t.parentTaskId && t.status !== 'closed' && t.status !== 'done' && t.status !== 'cancelled' && t.status !== 'hold'; });
+    if (filter === 'pending') {
+      // Pending shows ALL tasks needing attention - including subtasks
+      filtered = tasks.filter(function(t) { return t.status === 'planning' || t.status === 'pending_approval'; });
     } else if (filter === 'working') {
-      filtered = tasks.filter(function(t) { return !t.parentTaskId && (t.status === 'working' || t.status === 'planning'); });
+      // Show ALL working tasks including subtasks - subtasks can be working while parent is in different status
+      filtered = tasks.filter(function(t) { return t.status === 'working'; });
+    } else if (filter === 'done') {
+      filtered = tasks.filter(function(t) { return t.status === 'done'; });
+    } else if (filter === 'hold') {
+      filtered = tasks.filter(function(t) { return t.status === 'hold'; });
+    } else if (filter === 'cancelled') {
+      filtered = tasks.filter(function(t) { return t.status === 'cancelled'; });
     } else if (filter === 'closed') {
-      filtered = tasks.filter(function(t) { return !t.parentTaskId && (t.status === 'closed' || t.status === 'done'); });
-    } else if (filter === 'pending_approval') {
-      // Pending shows ALL tasks needing review - including subtasks, since the owner must see them
-      filtered = tasks.filter(function(t) { return t.status === 'pending_approval'; });
+      filtered = tasks.filter(function(t) { return t.status === 'closed'; });
     } else {
-      filtered = tasks.filter(function(t) { return !t.parentTaskId && t.status === filter; });
+      filtered = tasks.filter(function(t) { return t.status === filter; });
     }
 
     // Apply agent filter
@@ -705,6 +1176,42 @@
       });
     }
 
+    // Apply text filter (subtask-aware: parent shows if a subtask title matches)
+    var textFilter = context === 'dashboard' ? state.dashboardTextFilter : state.agentTextFilter;
+    if (textFilter) {
+      var tf = textFilter.toLowerCase();
+      var allTasksForText = context === 'dashboard' ? state.cachedDashboardTasks : state.cachedAgentTasks;
+      filtered = filtered.filter(function(t) {
+        if ((t.title || '').toLowerCase().indexOf(tf) !== -1) return true;
+        if ((t.description || '').toLowerCase().indexOf(tf) !== -1) return true;
+        var subs = allTasksForText.filter(function(s) { return s.parentTaskId === t.id; });
+        return subs.some(function(sub) {
+          return (sub.title || '').toLowerCase().indexOf(tf) !== -1;
+        });
+      });
+    }
+
+    // Apply time filter
+    var timeFilter = context === 'dashboard' ? state.dashboardTimeFilter : state.agentTimeFilter;
+    if (timeFilter && timeFilter !== 'all') {
+      var now = new Date();
+      var boundary;
+      if (timeFilter === 'today') {
+        boundary = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      } else if (timeFilter === 'week') {
+        boundary = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      } else if (timeFilter === 'month') {
+        boundary = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      }
+      if (boundary) {
+        var boundaryISO = boundary.toISOString();
+        filtered = filtered.filter(function(t) {
+          var ts = t.updatedAt || t.createdAt || '';
+          return ts >= boundaryISO;
+        });
+      }
+    }
+
     var sortState = context === 'dashboard' ? state.dashboardSort : state.agentSort;
     filtered.sort(function(a, b) {
       // Priority sort (if active): higher priority first
@@ -713,10 +1220,10 @@
         var pb = PRIORITY_ORDER[b.priority] !== undefined ? PRIORITY_ORDER[b.priority] : 2;
         if (pa !== pb) return pa - pb;
       }
-      // New sort (if active): newest first by createdAt
-      if (sortState['new']) {
-        var da = a.createdAt || '';
-        var db = b.createdAt || '';
+      // Updated sort (if active): most recently updated first
+      if (sortState['updated']) {
+        var da = a.updatedAt || a.createdAt || '';
+        var db = b.updatedAt || b.createdAt || '';
         if (da !== db) return db.localeCompare(da);
       }
       return 0;
@@ -728,7 +1235,7 @@
     if (!task.dependsOn || task.dependsOn.length === 0) return false;
     return task.dependsOn.some(function(depId) {
       var dep = allTasks.find(function(t) { return t.id === depId; });
-      return !dep || (dep.status !== 'done' && dep.status !== 'closed');
+      return !dep || (dep.status !== 'closed' && dep.status !== 'done');
     });
   }
 
@@ -839,27 +1346,92 @@
     for (var c = 0; c <= maxCol; c++) columns.push([]);
     nodes.forEach(function(t) { columns[colMap[t.id] || 0].push(t); });
 
-    // Sort within columns: active statuses first
-    var statusPriority = { working: 0, planning: 1, pending_approval: 2, done: 3, hold: 4, closed: 5, cancelled: 6 };
-    columns.forEach(function(col) {
-      col.sort(function(a, b) {
-        var sa = statusPriority[a.status] !== undefined ? statusPriority[a.status] : 8;
-        var sb = statusPriority[b.status] !== undefined ? statusPriority[b.status] : 8;
-        return sa - sb;
-      });
+    // Sort by status priority helper
+    var statusPriority = { working: 0, pending_approval: 1, planning: 2, done: 3, hold: 4, closed: 5, cancelled: 6 };
+    function statusSort(a, b) {
+      var sa = statusPriority[a.status] !== undefined ? statusPriority[a.status] : 8;
+      var sb = statusPriority[b.status] !== undefined ? statusPriority[b.status] : 8;
+      return sa - sb;
+    }
+
+    // Build parent-children groups for clustered layout
+    // A "parent" here is a col-0 task that has subtasks visible in the graph
+    var parentGroups = []; // [{parent: task, children: [tasks in col 1+]}]
+    var orphans = [];      // col-0 tasks with no subtasks
+    var childrenPlaced = {}; // track which children are placed via a parent group
+
+    // Identify col-0 tasks that have subtask children
+    var col0 = columns[0] || [];
+    col0.sort(statusSort);
+    col0.forEach(function(t) {
+      var kids = [];
+      if (t.subtasks && t.subtasks.length > 0) {
+        t.subtasks.forEach(function(sid) {
+          if (nodeSet[sid] && colMap[sid] > 0) {
+            kids.push(taskMap[sid]);
+            childrenPlaced[sid] = true;
+          }
+        });
+      }
+      if (kids.length > 0) {
+        kids.sort(statusSort);
+        parentGroups.push({ parent: t, children: kids });
+      } else {
+        orphans.push(t);
+      }
     });
 
-    // Compute positions
+    // Compute positions: lay out groups first, then orphans, then remaining unplaced nodes
     var canvasH = 0;
-    columns.forEach(function(col, ci) {
-      var x = padX + ci * nodeGapX;
-      var y = padY;
-      col.forEach(function(task) {
-        nodePositions[task.id] = { x: x, y: y, w: nodeW, h: nodeH };
-        y += nodeH + nodeGapY;
+    var curY = padY;
+    var groupGapY = 28; // extra gap between groups
+
+    // Lay out parent groups: parent at col 0, children at their assigned columns, all vertically clustered
+    parentGroups.forEach(function(group) {
+      var parentX = padX + (colMap[group.parent.id] || 0) * nodeGapX;
+      var childCount = group.children.length;
+      // Total height of children block
+      var childrenBlockH = childCount * nodeH + (childCount - 1) * nodeGapY;
+      // Parent is vertically centered relative to its children
+      var parentY, childStartY;
+      if (childrenBlockH > nodeH) {
+        childStartY = curY;
+        parentY = curY + (childrenBlockH - nodeH) / 2;
+      } else {
+        parentY = curY;
+        childStartY = curY + (nodeH - childrenBlockH) / 2;
+      }
+      nodePositions[group.parent.id] = { x: parentX, y: parentY, w: nodeW, h: nodeH };
+      var cy = childStartY;
+      group.children.forEach(function(child) {
+        var childCol = colMap[child.id] || 1;
+        var childX = padX + childCol * nodeGapX;
+        nodePositions[child.id] = { x: childX, y: cy, w: nodeW, h: nodeH };
+        cy += nodeH + nodeGapY;
       });
-      if (y > canvasH) canvasH = y;
+      var groupBottom = Math.max(parentY + nodeH, childStartY + childrenBlockH);
+      curY = groupBottom + groupGapY;
     });
+
+    // Lay out orphan col-0 tasks (no subtasks)
+    if (orphans.length > 0) {
+      var orphanX = padX;
+      orphans.forEach(function(t) {
+        nodePositions[t.id] = { x: orphanX, y: curY, w: nodeW, h: nodeH };
+        curY += nodeH + nodeGapY;
+      });
+    }
+
+    // Lay out any remaining nodes not yet placed (e.g. col 1+ nodes that aren't subtasks of a col-0 parent)
+    nodes.forEach(function(t) {
+      if (nodePositions[t.id]) return;
+      var col = colMap[t.id] || 0;
+      var x = padX + col * nodeGapX;
+      nodePositions[t.id] = { x: x, y: curY, w: nodeW, h: nodeH };
+      curY += nodeH + nodeGapY;
+    });
+
+    canvasH = curY;
     canvasH = Math.max(canvasH + padY, 300);
     var canvasW = padX * 2 + (maxCol + 1) * nodeGapX;
 
@@ -1074,6 +1646,11 @@
     html += '<span class="badge badge-' + (task.priority || 'medium') + '">' + escHtml(task.priority || 'medium') + '</span>';
     html += '<span class="badge badge-' + (task.status || 'planning') + '">' + escHtml(statusLabel) + '</span>';
     if (agentName) html += '<span style="font-size:11px;color:var(--text-muted)">' + escHtml(agentName) + '</span>';
+    var hierTs = task.updatedAt || task.createdAt;
+    if (hierTs) html += '<span class="task-time-ago" title="' + new Date(hierTs).toLocaleString() + '">' + timeAgo(hierTs) + '</span>';
+    if (task.tokenUsage && task.tokenUsage.totalTokens) {
+      html += '<span class="task-token-count" title="' + task.tokenUsage.totalTokens.toLocaleString() + ' tokens">' + formatTokenCount(task.tokenUsage.totalTokens) + '</span>';
+    }
     html += '</div></div>';
 
     if (hasChildren) {
@@ -1120,7 +1697,8 @@
   var STATUS_LABELS = {
     planning: 'planning', working: 'working', pending_approval: 'pending',
     done: 'done', closed: 'closed',
-    hold: 'hold', cancelled: 'cancelled'
+    hold: 'hold', cancelled: 'cancelled',
+    approved: 'execute'
   };
 
   function renderTaskCard(t, context, isSubtask, depth) {
@@ -1135,13 +1713,36 @@
     var outputIcon = hasOutput ? '<span class="task-output-icon" title="Has output"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>' : '';
     var isWorking = t.status === 'working';
     var workingDot = isWorking ? '<span class="agent-working-dot" title="Working"></span>' : '';
-    var autopilotIcon = t.autopilot ? '<span class="autopilot-badge" title="Autopilot">&#9881;</span>' : '';
+    var autopilotIcon = '';
+    if (t.interval || t.scheduledAt) {
+      var scheduleLabel = t.interval ? 'Every ' + t.interval + ' ' + (t.intervalUnit || '') : 'Scheduled';
+      autopilotIcon = '<span class="timed-badge" title="' + scheduleLabel + '">&#128339;</span>';
+    } else if (t.autopilot) {
+      autopilotIcon = '<span class="autopilot-badge" title="Autopilot">&#9881;</span>';
+    }
+    var scheduleInfo = '';
+    if (t.interval && t.intervalUnit) {
+      scheduleInfo = '<span class="schedule-info-mini">' + formatIntervalFields(t.interval, t.intervalUnit) + '</span>';
+      if (t.runCount) scheduleInfo += '<span class="run-count-mini">#' + t.runCount + '</span>';
+    } else if (t.scheduledAt) {
+      var sd = new Date(t.scheduledAt);
+      scheduleInfo = '<span class="schedule-info-mini">' + sd.toLocaleDateString(undefined, {month:'short',day:'numeric'}) + '</span>';
+    }
     var blocked = isTaskBlocked(t, state.tasks);
     var blockedBadge = blocked ? '<span class="badge badge-blocked">blocked</span>' : '';
     var hasBlocker = !!t.blocker;
     var blockerBadge = hasBlocker ? '<span class="blocker-badge-small">BLOCKER</span>' : '';
+    var isStalePlanning = t.status === 'planning' && t.stalePlanning;
+    var stalePlanningBadge = isStalePlanning ? '<span class="stale-planning-badge" title="No agent active - task stuck in planning">&#9888; no agent</span>' : '';
+    var isInterrupted = !!t.interrupted && (t.status === 'working' || t.status === 'planning');
+    var interruptedBadge = isInterrupted ? '<span class="interrupted-badge" title="Agent session lost - task stalled">&#9888;</span>' : '';
+    var isSuperseded = !!t.supersededBy;
+    var supersededBadge = isSuperseded ? '<span class="superseded-badge">Superseded</span>' : '';
     var subtaskClass = isSubtask ? ' subtask-item' : '';
     var blockerClass = hasBlocker ? ' task-has-blocker' : '';
+    var interruptedClass = isInterrupted ? ' task-interrupted' : '';
+    var stalePlanningClass = isStalePlanning ? ' task-stale-planning' : '';
+    var supersededClass = isSuperseded ? ' task-superseded' : '';
     var depthStyle = isSubtask && depth ? ' style="padding-left:' + (16 + depth * 16) + 'px;margin-left:' + (depth * 12) + 'px"' : '';
     var statusLabel = STATUS_LABELS[t.status] || (t.status || 'planning').replace(/_/g, ' ');
 
@@ -1158,22 +1759,29 @@
       var isOverdue = dueDate < now && t.status !== 'closed' && t.status !== 'done';
       dueDateHtml = '<span class="task-due' + (isOverdue ? ' task-due-overdue' : '') + '" title="Due: ' + dueDate.toLocaleDateString() + '">' + dueDate.toLocaleDateString() + '</span>';
     }
-    var timeAgoHtml = t.createdAt ? '<span class="task-time-ago">' + timeAgo(t.createdAt) + '</span>' : '';
+    var timeAgoTs = t.updatedAt || t.createdAt;
+    var timeAgoHtml = timeAgoTs ? '<span class="task-time-ago" title="' + new Date(timeAgoTs).toLocaleString() + '">' + timeAgo(timeAgoTs) + '</span>' : '';
+    var tokenHtml = '';
+    if (t.tokenUsage && t.tokenUsage.totalTokens) {
+      tokenHtml = '<span class="task-token-count" title="' + t.tokenUsage.totalTokens.toLocaleString() + ' tokens">\u2B21 ' + formatTokenCount(t.tokenUsage.totalTokens) + '</span>';
+    } else {
+      tokenHtml = '<span class="task-token-count task-token-empty">\u2B21 -</span>';
+    }
 
-    return '<div class="task-item' + subtaskClass + blockerClass + '"' + depthStyle + ' onclick="App.openTask(' + q + t.id + q + ')">' +
-      '<span class="task-title">' + outputIcon + autopilotIcon + escHtml(t.title) + tagPills + '</span>' +
+    return '<div class="task-item' + subtaskClass + blockerClass + interruptedClass + stalePlanningClass + supersededClass + '"' + depthStyle + ' onclick="App.openTask(' + q + t.id + q + ')">' +
+      '<span class="task-title">' + outputIcon + autopilotIcon + escHtml(t.title) + scheduleInfo + tagPills + '</span>' +
       '<span class="task-meta">' +
         '<span class="badge ' + priorityClass + '">' + escHtml(t.priority || 'medium') + '</span>' +
-        '<span class="badge ' + statusClass + '">' + escHtml(statusLabel) + workingDot + '</span>' +
-        blockedBadge + blockerBadge +
+        '<span class="badge ' + statusClass + '">' + escHtml(statusLabel) + workingDot + interruptedBadge + '</span>' +
+        blockedBadge + blockerBadge + stalePlanningBadge + supersededBadge +
         (agentName ? '<span>' + escHtml(agentName) + '</span>' : '') +
-        dueDateHtml + timeAgoHtml +
+        dueDateHtml + timeAgoHtml + tokenHtml +
       '</span></div>';
   }
 
   function toggleSort(dimension, context) {
     var sortState = context === 'dashboard' ? state.dashboardSort : state.agentSort;
-    var other = dimension === 'new' ? 'priority' : 'new';
+    var other = dimension === 'updated' ? 'priority' : 'updated';
     if (sortState[dimension] && !sortState[other]) return;
     sortState[dimension] = !sortState[dimension];
     localStorage.setItem(context + 'Sort', JSON.stringify(sortState));
@@ -1191,7 +1799,29 @@
     });
   }
 
-  function filterTasks(filter, context) {
+  var _textFilterTimer = null;
+  function setTextFilter(value, context) {
+    if (context === 'dashboard') {
+      state.dashboardTextFilter = value;
+    } else {
+      state.agentTextFilter = value;
+    }
+    if (_textFilterTimer) clearTimeout(_textFilterTimer);
+    _textFilterTimer = setTimeout(function() {
+      renderFilteredTasks(context);
+    }, 300);
+  }
+
+  function setTimeFilter(value, context) {
+    if (context === 'dashboard') {
+      state.dashboardTimeFilter = value;
+    } else {
+      state.agentTimeFilter = value;
+    }
+    renderFilteredTasks(context);
+  }
+
+  async function filterTasks(filter, context) {
     if (context === 'dashboard') {
       state.dashboardTaskFilter = filter;
       // Update stat card highlights
@@ -1201,7 +1831,7 @@
       // Update panel title text without destroying the view-mode-toggle buttons inside the h3
       var titleEl = document.getElementById('dashboard-tasks-title');
       if (titleEl) {
-        var labels = { all: 'All Tasks', pending_approval: 'Pending Review', working: 'Working', done: 'Done', closed: 'Closed', hold: 'On Hold' };
+        var labels = { pending: 'Pending', working: 'Working', done: 'Done', hold: 'On Hold', cancelled: 'Cancelled', closed: 'Closed' };
         var titleText = labels[filter] || filter.replace(/_/g, ' ');
         var firstText = titleEl.firstChild;
         if (firstText && firstText.nodeType === 3) {
@@ -1209,6 +1839,17 @@
         } else {
           titleEl.insertBefore(document.createTextNode(titleText + '\n        '), titleEl.firstChild);
         }
+      }
+      // For closed/cancelled filters, fetch with archive included
+      if (filter === 'closed' || filter === 'cancelled') {
+        try {
+          var archiveData = await api.get('/api/tasks?include=archive');
+          var archiveTasks = archiveData.tasks || [];
+          var fullArchiveTasks = await Promise.all(archiveTasks.map(function(t) {
+            return api.get('/api/tasks/' + t.id).catch(function() { return Object.assign({ priority: 'medium' }, t); });
+          }));
+          state.cachedDashboardTasks = fullArchiveTasks;
+        } catch(e) { console.error('Failed to load archive tasks:', e); }
       }
     } else {
       state.agentTaskFilter = filter;
@@ -1219,6 +1860,18 @@
           var badgeFilter = badge.getAttribute('onclick').match(/'([^']+)'/);
           if (badgeFilter) badge.classList.toggle('badge-active-filter', badgeFilter[1] === filter);
         });
+      }
+      // For closed/cancelled filters on agent page, fetch with archive included
+      if (filter === 'closed' || filter === 'cancelled') {
+        try {
+          var archiveData = await api.get('/api/tasks?include=archive');
+          var agentId = state.currentAgent ? state.currentAgent.id : null;
+          var archiveTasks = (archiveData.tasks || []).filter(function(t) { return t.assignedTo === agentId; });
+          var fullArchiveTasks = await Promise.all(archiveTasks.map(function(t) {
+            return api.get('/api/tasks/' + t.id).catch(function() { return Object.assign({ priority: 'medium' }, t); });
+          }));
+          state.cachedAgentTasks = fullArchiveTasks;
+        } catch(e) { console.error('Failed to load archive tasks:', e); }
       }
     }
     renderFilteredTasks(context);
@@ -1266,6 +1919,18 @@
       parentOpts.innerHTML = parentHtml;
     }
     setCustomSelect('add-task-parent-select', '', 'None');
+    // Populate supersedes custom-select
+    var supersedesOpts = document.getElementById('add-task-supersedes-options');
+    if (supersedesOpts) {
+      var supersedesHtml = '<div class="custom-select-option selected" data-value="">None</div>';
+      (state.cachedDashboardTasks || state.tasks || []).forEach(function(t) {
+        if (t.supersededBy) return; // Already superseded
+        if (t.status === 'cancelled') return;
+        supersedesHtml += '<div class="custom-select-option" data-value="' + t.id + '">' + escHtml(t.title.substring(0, 40)) + '</div>';
+      });
+      supersedesOpts.innerHTML = supersedesHtml;
+    }
+    setCustomSelect('add-task-supersedes-select', '', 'None');
     // Initialize depends-on chip input
     state._addTaskDeps = [];
     state._addTaskDepsList = (state.cachedDashboardTasks || state.tasks || []).filter(function(t) {
@@ -1289,8 +1954,6 @@
       });
     }
     modal.classList.remove('hidden');
-    // Init tag input
-    initTagInput('add-task-tag-container', []);
     setTimeout(function() { document.getElementById('add-task-title').focus(); }, 100);
   }
 
@@ -1308,7 +1971,6 @@
 
     try {
       var autopilot = document.getElementById('add-task-autopilot').checked;
-      var tags = getTagInputTags('add-task-tag-container');
       var dueDate = (document.getElementById('add-task-duedate') || {}).value || '';
       var parentId = (document.getElementById('add-task-parent') || {}).value || '';
       var dependsOn = (state._addTaskDeps || []).slice();
@@ -1321,7 +1983,6 @@
         priority: priority,
         type: type,
         autopilot: autopilot,
-        tags: tags
       };
       // Add interval fields if autopilot is checked and interval is set
       if (autopilot) {
@@ -1334,6 +1995,8 @@
       }
       if (dueDate) taskBody.dueDate = dueDate;
       if (dependsOn.length > 0) taskBody.dependsOn = dependsOn;
+      var supersedes = (document.getElementById('add-task-supersedes') || {}).value || '';
+      if (supersedes) taskBody.supersedes = supersedes;
 
       if (parentId) {
         // Create as subtask
@@ -1359,6 +2022,9 @@
     if (tab === 'files' && state.currentAgentId) {
       loadAgentFiles(state.currentAgentId);
     }
+    if (tab === 'stats' && state.currentAgentId) {
+      loadAgentStats(state.currentAgentId);
+    }
   }
 
   function switchFilesSubTab(subtab) {
@@ -1368,6 +2034,117 @@
     document.querySelectorAll('.agent-files-subtab-panel').forEach(function(panel) {
       panel.classList.toggle('active', panel.id === 'agent-files-subtab-' + subtab);
     });
+  }
+
+  // ── Agent Stats Tab ─────────────────────────────
+  var statsCache = null;
+
+  async function loadStats() {
+    if (statsCache && Date.now() - statsCache._ts < 30000) return statsCache;
+    try {
+      var data = await api.get('/api/stats');
+      data._ts = Date.now();
+      statsCache = data;
+      return data;
+    } catch(e) {
+      console.error('Failed to load stats:', e);
+      return null;
+    }
+  }
+
+  function formatHours(h) {
+    if (h < 1) return '<1h';
+    if (h < 24) return Math.round(h) + 'h';
+    var d = h / 24;
+    return d < 2 ? '1 day' : Math.round(d * 10) / 10 + ' days';
+  }
+
+  async function loadAgentStats(agentId) {
+    var el = document.getElementById('agent-stats-content');
+    if (!el) return;
+    el.innerHTML = '<p class="empty-state">Loading stats...</p>';
+    var data = await loadStats();
+    if (!data) { el.innerHTML = '<p class="empty-state">Failed to load stats</p>'; return; }
+    var ag = null;
+    (data.agents || []).forEach(function(a) { if (a.id === agentId) ag = a; });
+    if (!ag) { el.innerHTML = '<p class="empty-state">No stats available for this agent</p>'; return; }
+
+    var revPct = Math.round(ag.revisionRate * 100);
+    var revColor = revPct <= 10 ? 'var(--green)' : revPct <= 25 ? 'var(--yellow)' : 'var(--red)';
+
+    var html = '<div class="perf-stats-row">';
+    html += '<div class="perf-stat-card"><div class="perf-stat-value">' + ag.closedTasks + '</div><div class="perf-stat-label">Closed</div></div>';
+    html += '<div class="perf-stat-card"><div class="perf-stat-value">' + ag.activeTasks + '</div><div class="perf-stat-label">Active</div></div>';
+    html += '<div class="perf-stat-card"><div class="perf-stat-value">' + formatHours(ag.avgCloseTimeHours) + '</div><div class="perf-stat-label">Avg Close Time</div></div>';
+    html += '<div class="perf-stat-card"><div class="perf-stat-value" style="color:' + revColor + '">' + revPct + '%</div><div class="perf-stat-label">Revision Rate</div></div>';
+    html += '</div>';
+
+    // Activity - last 7d / 30d
+    html += '<div class="panel" style="margin-top:16px"><h3>Activity</h3>';
+    html += '<div class="perf-activity-row">';
+    html += '<div class="perf-activity-block"><div class="perf-activity-label">Last 7 days</div><div class="perf-activity-nums"><span class="perf-num-green">' + ag.last7Days.closed + ' closed</span> <span class="perf-num-muted">' + ag.last7Days.created + ' created</span></div></div>';
+    html += '<div class="perf-activity-block"><div class="perf-activity-label">Last 30 days</div><div class="perf-activity-nums"><span class="perf-num-green">' + ag.last30Days.closed + ' closed</span> <span class="perf-num-muted">' + ag.last30Days.created + ' created</span></div></div>';
+    html += '</div></div>';
+
+    // Task type breakdown
+    var types = ag.tasksByType || {};
+    var typeKeys = Object.keys(types);
+    if (typeKeys.length > 0) {
+      var maxType = Math.max.apply(null, typeKeys.map(function(k) { return types[k]; }));
+      html += '<div class="panel" style="margin-top:16px"><h3>Task Types</h3>';
+      typeKeys.sort(function(a,b) { return types[b] - types[a]; });
+      typeKeys.forEach(function(k) {
+        var pct = maxType > 0 ? Math.round(types[k] / maxType * 100) : 0;
+        html += '<div class="perf-type-row"><span class="perf-type-name">' + escHtml(k) + '</span><div class="perf-type-bar-bg"><div class="perf-type-bar" style="width:' + pct + '%"></div></div><span class="perf-type-count">' + types[k] + '</span></div>';
+      });
+      html += '</div>';
+    }
+
+    // Blockers
+    if (ag.blockerCount > 0) {
+      html += '<div class="panel" style="margin-top:16px"><h3>Blockers</h3><p style="color:var(--red)">' + ag.blockerCount + ' task(s) currently blocked</p></div>';
+    }
+
+    el.innerHTML = html;
+  }
+
+  async function renderTeamPerformance() {
+    var section = document.getElementById('team-performance-section');
+    if (!section) return;
+    var data = await loadStats();
+    if (!data || !data.agents || data.agents.length === 0) { section.style.display = 'none'; return; }
+    section.style.display = '';
+    var cardsEl = document.getElementById('team-perf-cards');
+    var html = '';
+    data.agents.forEach(function(ag) {
+      if (ag.totalTasks === 0) return;
+      var revPct = Math.round(ag.revisionRate * 100);
+      var revColor = revPct <= 10 ? 'var(--green)' : revPct <= 25 ? 'var(--yellow)' : 'var(--red)';
+      html += '<div class="team-perf-card" onclick="App.navigate(\'agent-detail\',\'' + ag.id + '\'); setTimeout(function(){App.switchAgentTab(\'stats\');},100);">';
+      html += '<div class="team-perf-card-name">' + escHtml(ag.name) + '</div>';
+      html += '<div class="team-perf-card-role">' + escHtml(ag.role) + '</div>';
+      html += '<div class="team-perf-card-stats">';
+      html += '<div><span class="team-perf-num">' + ag.closedTasks + '</span> closed</div>';
+      html += '<div><span class="team-perf-num">' + ag.activeTasks + '</span> active</div>';
+      html += '<div>Avg: <span class="team-perf-num">' + formatHours(ag.avgCloseTimeHours) + '</span></div>';
+      html += '<div>Rev: <span class="team-perf-num" style="color:' + revColor + '">' + revPct + '%</span></div>';
+      html += '</div></div>';
+    });
+    cardsEl.innerHTML = html;
+  }
+
+  var teamPerfExpanded = false;
+  function toggleTeamPerf() {
+    teamPerfExpanded = !teamPerfExpanded;
+    var cardsEl = document.getElementById('team-perf-cards');
+    var icon = document.getElementById('team-perf-toggle-icon');
+    if (teamPerfExpanded) {
+      cardsEl.style.display = '';
+      icon.innerHTML = '&#9660;';
+    } else {
+      cardsEl.style.display = 'none';
+      icon.innerHTML = '&#9654;';
+    }
   }
 
   // ── Agent Files Tab ─────────────────────────────
@@ -1449,6 +2226,7 @@
 
     try {
       var task = await api.get('/api/tasks/' + id);
+      state.currentTask = task;
 
       document.getElementById('task-detail-title').textContent = task.title || 'Untitled';
 
@@ -1472,6 +2250,24 @@
         if (found) agentName = found.name;
       }
       document.getElementById('task-detail-agent').textContent = agentName;
+
+      // Model info for task detail
+      var modelInfoEl = document.getElementById('task-detail-model-info');
+      if (modelInfoEl) {
+        var mr = state.modelRouting || { mode: 'default' };
+        if (mr.mode !== 'default' && task.assignedTo) {
+          var agentModel = (mr.agentModels || {})[task.assignedTo];
+          if (agentModel && MODEL_DISPLAY[agentModel]) {
+            modelInfoEl.innerHTML = '<span class="task-model-label">Model:</span> <span class="model-badge model-badge-' + agentModel + '">[' + agentModel[0].toUpperCase() + ']</span> ' + MODEL_DISPLAY[agentModel];
+            modelInfoEl.style.display = '';
+          } else {
+            modelInfoEl.style.display = 'none';
+          }
+        } else {
+          modelInfoEl.style.display = 'none';
+        }
+      }
+
       var dateHtml = '';
       if (task.createdAt) dateHtml += 'Created: ' + new Date(task.createdAt).toLocaleString() + ' (' + timeAgo(task.createdAt) + ')';
       if (task.updatedAt && task.updatedAt !== task.createdAt) dateHtml += ' | Updated: ' + new Date(task.updatedAt).toLocaleString() + ' (' + timeAgo(task.updatedAt) + ')';
@@ -1480,6 +2276,9 @@
         var today = new Date(); today.setHours(0, 0, 0, 0);
         var isOverdue = dueDate < today && task.status !== 'closed' && task.status !== 'done';
         dateHtml += ' | <span class="' + (isOverdue ? 'task-due-overdue' : 'task-due-detail') + '">Due: ' + dueDate.toLocaleDateString() + '</span>';
+      }
+      if (task.tokenUsage && task.tokenUsage.totalTokens) {
+        dateHtml += ' | <span class="task-detail-token-usage" title="' + task.tokenUsage.totalTokens.toLocaleString() + ' tokens total">' + formatTokenCount(task.tokenUsage.totalTokens) + ' tokens</span>';
       }
       document.getElementById('task-detail-date').innerHTML = dateHtml || '-';
 
@@ -1499,16 +2298,46 @@
         typeEl.style.display = 'none';
       }
 
+      // Supersedes/supersededBy lineage
+      var lineageEl = document.getElementById('task-detail-lineage');
+      if (lineageEl) {
+        var lineageHtml = '';
+        if (task.supersededBy) {
+          var sbTask = (state.tasks || []).find(function(t) { return t.id === task.supersededBy; });
+          var sbTitle = sbTask ? sbTask.title : task.supersededBy;
+          lineageHtml += '<div class="task-lineage-notice superseded-notice">Superseded by <a onclick="App.openTask(\'' + escHtml(task.supersededBy) + '\')">' + escHtml(sbTitle) + '</a></div>';
+        }
+        if (task.supersedes) {
+          var sTask = (state.tasks || []).find(function(t) { return t.id === task.supersedes; });
+          var sTitle = sTask ? sTask.title : task.supersedes;
+          lineageHtml += '<div class="task-lineage-notice supersedes-notice">Supersedes <a onclick="App.openTask(\'' + escHtml(task.supersedes) + '\')">' + escHtml(sTitle) + '</a></div>';
+        }
+        lineageEl.innerHTML = lineageHtml;
+        lineageEl.style.display = lineageHtml ? '' : 'none';
+      }
+
       // Promote to Knowledge bar
       var promoteBar = document.getElementById('task-promote-bar');
       var knowledgeLink = document.getElementById('task-knowledge-link');
       if (task.knowledgeDocId) {
         promoteBar.classList.add('hidden');
-        knowledgeLink.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg> <a onclick="App.openKnowledgeDoc(\'' + task.knowledgeDocId + '\')">View in Knowledge Base</a>';
+        var kbLinkHtml = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg> <a onclick="App.openKnowledgeDoc(\'' + task.knowledgeDocId + '\')">View in Knowledge Base</a>';
+        if (task.promotedToKb) {
+          kbLinkHtml += ' <span class="auto-promoted-badge">Auto-promoted to KB</span>';
+        }
+        if (task.promotedToMedia) {
+          kbLinkHtml += ' <span class="auto-promoted-badge auto-promoted-media">Auto-promoted to Media</span>';
+        }
+        knowledgeLink.innerHTML = kbLinkHtml;
         knowledgeLink.classList.remove('hidden');
       } else if (task.status === 'closed' || task.status === 'done') {
         promoteBar.classList.remove('hidden');
-        knowledgeLink.classList.add('hidden');
+        var extraBadges = '';
+        if (task.promotedToMedia) {
+          extraBadges = '<span class="auto-promoted-badge auto-promoted-media" style="margin-left:8px">Auto-promoted to Media</span>';
+        }
+        knowledgeLink.innerHTML = extraBadges;
+        knowledgeLink.classList.toggle('hidden', !extraBadges);
       } else {
         promoteBar.classList.add('hidden');
         knowledgeLink.classList.add('hidden');
@@ -1543,6 +2372,10 @@
           if (pre === '"' || pre === "'") return m;
           return pre + '<a href="/api/raw/' + path + '" target="_blank" style="display:inline-block;margin:4px 0"><img src="/api/raw/' + path + '" alt="' + escHtml(path) + '" style="max-width:320px;max-height:200px;border-radius:6px;border:1px solid var(--border)"></a>';
         });
+        // Sanitize rendered HTML to prevent XSS via malicious markdown
+        if (typeof DOMPurify !== 'undefined') {
+          html = DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel', 'onclick'], ADD_TAGS: ['img'] });
+        }
         return html;
       }
       return escHtml(text).replace(/\n/g, '<br>');
@@ -1581,7 +2414,9 @@
       if (!versions) versions = [];
     } catch(e) { versions = []; }
 
-    if (versions.length === 0 && task.status === 'planning' && (!task.progressLog || task.progressLog.length === 0)) {
+    if (versions.length === 0 && task.status === 'working') {
+      html += '<div class="session-planning-banner"><span class="agent-working-dot"></span> Agent is working on a plan. Progress updates will appear below.</div>';
+    } else if (versions.length === 0 && task.status === 'planning' && (!task.progressLog || task.progressLog.length === 0)) {
       html += '<div class="session-awaiting">Awaiting agent submission...</div>';
     }
 
@@ -1589,15 +2424,19 @@
     // Collect all events: versions, progress entries, owner feedback
     var timeline = [];
 
-    // Add version events
+    // Add version events (chronological: v1 first, v2 after, etc.)
     versions.forEach(function(v, idx) {
       var ts = v.submittedAt || v.decidedAt || task.createdAt || '';
-      timeline.push({ type: 'version', data: v, idx: idx, timestamp: ts });
-      // Add owner feedback as separate event after version
+      timeline.push({ type: 'version', data: v, idx: idx, timestamp: ts, _versionNum: v.number || (idx + 1) });
+      // Add deliverable/result/files as separate event after progress logs for this round
+      if (v.deliverable || v.result || (v.files && v.files.length > 0)) {
+        var delTs = v.submittedAt || v.decidedAt || task.createdAt || '';
+        timeline.push({ type: 'version_deliverable', data: v, idx: idx, timestamp: delTs, _versionNum: v.number || (idx + 1) });
+      }
+      // Add owner feedback as separate event after version deliverables
       if (v.decision || v.comments) {
         var fbTs = v.decidedAt || v.submittedAt || ts;
-        // Push feedback slightly after version so it sorts after
-        timeline.push({ type: 'feedback', data: v, timestamp: fbTs, _after: true });
+        timeline.push({ type: 'feedback', data: v, timestamp: fbTs, _after: true, _versionNum: v.number || (idx + 1) });
       }
     });
 
@@ -1608,14 +2447,68 @@
       });
     }
 
-    // Sort chronologically (versions and their feedback stay ordered by _after flag)
+    // Add agent history entries (assignment/stage changes)
+    if (task.agentHistory && task.agentHistory.length > 0) {
+      task.agentHistory.forEach(function(entry) {
+        timeline.push({ type: 'agent_change', data: entry, timestamp: entry.at || '' });
+      });
+    }
+
+    // Sort chronologically with version-aware ordering
+    // Approach: assign each event to a "round" based on which version it belongs to.
+    // Progress/agent_change events are assigned to the version round they fall within.
+    // Within each round: version -> progress/agent_change (by timestamp) -> deliverable -> feedback
+
+    // First, determine version time boundaries for round assignment
+    // Round N+1 starts when the owner decides on version N (decidedAt), since that's when
+    // new work toward the next version begins. Events after v1.decidedAt belong to round 2.
+    var versionBoundaries = [];
+    var sortedVersions = versions.slice().sort(function(a, b) { return a.number - b.number; });
+    sortedVersions.forEach(function(v, vi) {
+      var roundStart;
+      if (vi === 0) {
+        // Round 1 starts at the beginning of time
+        roundStart = 0;
+      } else {
+        // Round N starts when the previous version was decided (owner reviewed it)
+        var prev = sortedVersions[vi - 1];
+        roundStart = new Date(prev.decidedAt || prev.submittedAt || task.createdAt || 0).getTime();
+      }
+      versionBoundaries.push({ num: v.number, ts: roundStart });
+    });
+
+    // Assign round numbers to non-version events (progress, agent_change)
+    timeline.forEach(function(evt) {
+      if (evt._versionNum) return; // already has a version/round assignment
+      var evtTime = new Date(evt.timestamp || 0).getTime();
+      // Find which version round this event belongs to (the latest round that started before/at this event)
+      var round = 0;
+      for (var vi = 0; vi < versionBoundaries.length; vi++) {
+        if (evtTime >= versionBoundaries[vi].ts) {
+          round = versionBoundaries[vi].num;
+        }
+      }
+      // If no round matched, assign to first version round
+      if (round === 0 && versionBoundaries.length > 0) round = versionBoundaries[0].num;
+      evt._roundNum = round;
+    });
+
     timeline.sort(function(a, b) {
+      // Determine round for each event
+      var aRound = a._versionNum || a._roundNum || 0;
+      var bRound = b._versionNum || b._roundNum || 0;
+      // Different rounds: sort by round number (ensures v1 before v2)
+      if (aRound !== bRound) return aRound - bRound;
+      // Same round: sort by type priority, then timestamp
+      // version (0) -> agent_change (1) -> progress (2) -> version_deliverable (3) -> feedback (4)
+      var order = { version: 0, agent_change: 1, progress: 2, version_deliverable: 3, feedback: 4 };
+      var aOrder = order[a.type] !== undefined ? order[a.type] : 2;
+      var bOrder = order[b.type] !== undefined ? order[b.type] : 2;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      // Same type within same round: sort by timestamp
       var ta = new Date(a.timestamp || 0).getTime();
       var tb = new Date(b.timestamp || 0).getTime();
-      if (ta !== tb) return ta - tb;
-      // Same timestamp: version before feedback, feedback before progress
-      var order = { version: 0, feedback: 1, progress: 2 };
-      return (order[a.type] || 0) - (order[b.type] || 0);
+      return ta - tb;
     });
 
     // Render unified timeline
@@ -1635,8 +2528,8 @@
           html += '<div class="session-version-id">';
           html += '<span class="session-dot' + (isApproved ? ' dot-approved' : isImproved ? ' dot-improved' : '') + '"></span>';
           html += 'v' + v.number;
-          if (v.submittedAt) html += ' - ' + new Date(v.submittedAt).toLocaleDateString();
-          else if (v.decidedAt) html += ' - ' + new Date(v.decidedAt).toLocaleDateString();
+          if (v.submittedAt) html += ' - ' + new Date(v.submittedAt).toLocaleString();
+          else if (v.decidedAt) html += ' - ' + new Date(v.decidedAt).toLocaleString();
           html += '</div>';
           html += '<span class="session-agent-name">Agent: ' + escHtml(agentName) + '</span>';
           html += '</div>';
@@ -1647,16 +2540,20 @@
             html += '<div class="session-content"><span class="empty-state" style="padding:8px">Awaiting submission...</span></div>';
           }
           html += '</div>'; // close tl-accent-version
+          html += '</div>'; // close session-version
 
+        } else if (evt.type === 'version_deliverable') {
+          var v = evt.data;
+          var delHtml = '';
           if (v.deliverable) {
-            html += '<div class="tl-accent tl-accent-deliverable"><div class="version-deliverable"><div class="version-deliverable-label">Deliverable</div>' + linkifyText(escHtml(v.deliverable)).replace(/\n/g, '<br>') + '</div></div>';
+            delHtml += '<div class="tl-accent tl-accent-deliverable"><div class="version-deliverable"><div class="version-deliverable-label">Deliverable</div>' + linkifyText(escHtml(v.deliverable)).replace(/\n/g, '<br>') + '</div></div>';
           }
           if (v.result) {
-            html += '<div class="tl-accent tl-accent-result"><div class="version-result"><div class="version-result-label">Result</div>' + linkifyText(escHtml(v.result)).replace(/\n/g, '<br>') + '</div></div>';
+            delHtml += '<div class="tl-accent tl-accent-result"><div class="version-result"><div class="version-result-label">Result</div>' + linkifyText(escHtml(v.result)).replace(/\n/g, '<br>') + '</div></div>';
           }
           if (v.files && v.files.length > 0) {
             var imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
-            html += '<div class="tl-accent tl-accent-files"><div class="version-files"><div class="version-files-label">Deliverable Files</div>' +
+            delHtml += '<div class="tl-accent tl-accent-files"><div class="version-files"><div class="version-files-label">Deliverable Files</div>' +
               v.files.map(function(f) {
                 var ext = f.lastIndexOf('.') >= 0 ? f.slice(f.lastIndexOf('.')).toLowerCase() : '';
                 var rawUrl = '/api/tasks/' + taskId + '/versions/' + v.number + '/files/' + encodeURIComponent(f) + '/raw';
@@ -1673,12 +2570,21 @@
                 } else {
                   linkHtml += '<a href="' + rawUrl + '" target="_blank" class="version-file-link">' + escHtml(f) + '</a>';
                 }
+                linkHtml += '<div class="file-quick-actions">';
+                if (isImage) {
+                  linkHtml += '<button class="btn-quick-add btn-quick-media" onclick="event.stopPropagation();App.openAddToMedia(\'' + escHtml(taskId) + '\',' + v.number + ',\'' + safeName + '\',\'' + rawUrl + '\')">Add to Media</button>';
+                }
+                if (isText || ext === '.md' || ext === '.txt') {
+                  linkHtml += '<button class="btn-quick-add btn-quick-kb" onclick="event.stopPropagation();App.openAddToKb(\'' + escHtml(taskId) + '\',' + v.number + ',\'' + safeName + '\')">Add to KB</button>';
+                }
+                linkHtml += '</div>';
                 linkHtml += '</div>';
                 return linkHtml;
               }).join('') + '</div></div>';
           }
-
-          html += '</div>'; // close session-version
+          if (delHtml) {
+            html += '<div class="session-version-deliverables">' + delHtml + '</div>';
+          }
 
         } else if (evt.type === 'feedback') {
           var v = evt.data;
@@ -1691,7 +2597,7 @@
             var decisionLabels = { accepted: 'Accepted', approved: 'Execute', improve: 'Improve', done: 'Closed', closed: 'Closed', hold: 'Hold', cancelled: 'Cancelled' };
             html += ' <span class="badge badge-' + (v.decision) + '">' + (decisionLabels[v.decision] || v.decision) + '</span>';
           }
-          if (v.decidedAt) html += '<span class="session-feedback-date">' + new Date(v.decidedAt).toLocaleDateString() + '</span>';
+          if (v.decidedAt) html += '<span class="session-feedback-date">' + new Date(v.decidedAt).toLocaleString() + '</span>';
           html += '</div>';
           if (v.comments) {
             html += '<div class="session-feedback-text">' + linkifyText(escHtml(v.comments)).replace(/\n/g, '<br>') + '</div>';
@@ -1702,23 +2608,45 @@
         } else if (evt.type === 'progress') {
           var entry = evt.data;
           var isBlocker = /blocker/i.test(entry.message);
+          var isActiveBlocker = isBlocker && !!task.blocker;
+          var isResolvedBlocker = isBlocker && !task.blocker;
           var hasUrl = /(https?:\/\/[^\s]+)/i.test(entry.message);
           var entryClass = 'timeline-progress';
-          if (isBlocker) entryClass += ' timeline-progress-blocker';
+          if (isActiveBlocker) entryClass += ' timeline-progress-blocker';
+          if (isResolvedBlocker) entryClass += ' timeline-progress-blocker-resolved';
           if (hasUrl) entryClass += ' timeline-progress-url';
           var agentLabel = entry.agentId || '';
           var agents = state.agents || [];
           for (var ai = 0; ai < agents.length; ai++) {
             if (agents[ai].id === entry.agentId) { agentLabel = agents[ai].name; break; }
           }
-          var timeStr = entry.timestamp ? new Date(entry.timestamp).toLocaleDateString() : '';
+          var timeStr = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '';
 
-          var progressAccent = isBlocker ? 'tl-accent-blocker' : 'tl-accent-progress';
+          var progressAccent = isActiveBlocker ? 'tl-accent-blocker' : isResolvedBlocker ? 'tl-accent-blocker-resolved' : 'tl-accent-progress';
           html += '<div class="' + entryClass + '">';
           html += '<div class="tl-accent ' + progressAccent + '">';
-          if (isBlocker) html += '<span class="progress-blocker-badge">BLOCKER</span> ';
+          if (isActiveBlocker) html += '<span class="progress-blocker-badge">BLOCKER</span> ';
+          if (isResolvedBlocker) html += '<span class="progress-blocker-badge progress-blocker-resolved">RESOLVED</span> ';
           html += '<span class="timeline-progress-message">' + linkifyText(escHtml(entry.message)) + '</span>';
           html += '<span class="timeline-progress-meta">' + escHtml(agentLabel) + (timeStr ? ' - ' + timeStr : '') + '</span>';
+          html += '</div></div>';
+
+        } else if (evt.type === 'agent_change') {
+          var ah = evt.data;
+          var ahAgentLabel = ah.agentId || 'Unassigned';
+          var agents = state.agents || [];
+          for (var ahi = 0; ahi < agents.length; ahi++) {
+            if (agents[ahi].id === ah.agentId) { ahAgentLabel = agents[ahi].name; break; }
+          }
+          var stageLabels = { planning: 'Planning', pending_approval: 'Pending', working: 'Working', done: 'Done', closed: 'Closed', hold: 'Hold', cancelled: 'Cancelled' };
+          var ahStage = stageLabels[ah.stage] || ah.stage || '';
+          var ahTime = ah.at ? new Date(ah.at).toLocaleString() : '';
+          html += '<div class="timeline-agent-change">';
+          html += '<div class="tl-accent tl-accent-agent-change">';
+          html += '<span class="agent-change-icon">&#8594;</span> ';
+          html += '<span class="agent-change-label">' + escHtml(ahAgentLabel) + '</span>';
+          html += '<span class="agent-change-stage">' + escHtml(ahStage) + '</span>';
+          if (ahTime) html += '<span class="timeline-progress-meta">' + ahTime + '</span>';
           html += '</div></div>';
         }
       });
@@ -1726,23 +2654,24 @@
     }
 
     // ── Bottom section: status pipeline + feedback ──
-    html += buildStatusPipeline(task);
+    html += buildStatusPipeline(task, versions);
 
     container.innerHTML = html;
   }
 
-  function buildStatusPipeline(task) {
+  function buildStatusPipeline(task, versions) {
     var current = task.status || 'planning';
-    // Map legacy 'done' to 'closed' for display
-    if (current === 'done') current = 'closed';
+    var hasPlan = versions && versions.length > 0 && versions.some(function(v) { return v.content && v.content.trim(); });
 
     var steps = [
       { key: 'pending_approval', label: 'Pending',   icon: '&#9679;'  },
-      { key: 'working',          label: 'Accept <span style="color:#6f6;font-size:0.75em;margin-left:2px">&#9654;</span>',  icon: '&#10003;', action: 'accept' },
+      { key: 'working',          label: 'Accept',     icon: '&#10003;', action: 'accept', guardIfNoPlan: true },
+      { key: 'done',             label: 'Done',      icon: '&#10004;', action: 'done'  },
       { key: 'closed',           label: 'Closed',    icon: '&#9632;', action: 'close'  }
     ];
     var sideStates = [
       { key: 'improve',   label: 'Improve', icon: '&#9999;', needsFeedback: true },
+      { key: 'schedule',  label: 'Schedule', icon: 'svg-clock', isSchedule: true },
       { key: 'hold',      label: 'Hold',    icon: '&#9208;' },
       { key: 'cancelled', label: 'Cancel',  icon: '&#10007;' }
     ];
@@ -1758,19 +2687,20 @@
       html += '<span class="pipeline-working-indicator"><span class="agent-working-dot"></span> Working</span>';
     }
 
-    // Autopilot toggle
-    html += '<button class="autopilot-toggle' + (task.autopilot ? ' active' : '') + '" onclick="App.toggleTaskAutopilot()" title="Toggle autopilot mode">';
-    html += '&#9881; Autopilot ' + (task.autopilot ? 'ON' : 'OFF');
-    html += '</button>';
-
-    // Recurring autopilot info
-    if (task.autopilot && task.interval && task.intervalUnit) {
-      html += '<div class="autopilot-recurring-info" style="display:inline-flex;align-items:center;gap:8px;margin-left:8px;font-size:12px;color:var(--text-muted)">';
-      html += '<span>Every ' + task.interval + (task.intervalUnit === 'minutes' ? 'm' : task.intervalUnit === 'hours' ? 'h' : 'd') + '</span>';
-      if (task.lastRun) html += '<span>Last: ' + new Date(task.lastRun).toLocaleString() + '</span>';
-      if (task.nextRun) html += '<span>Next: ' + new Date(task.nextRun).toLocaleString() + '</span>';
-      if (task.runCount) html += '<span>Runs: ' + task.runCount + '</span>';
-      html += '</div>';
+    // Autopilot toggle with lock logic for timed tasks
+    var isTimed = !!(task.interval || task.scheduledAt);
+    if (isTimed) {
+      var isDeferred = task.scheduledAt && !task.interval && (current === 'pending_approval' || current === 'hold');
+      var timedLabel = isDeferred
+        ? '&#128339; Scheduled - auto-executes at ' + new Date(task.scheduledAt).toLocaleString()
+        : '&#128339; Timed (Autopilot locked)';
+      html += '<span class="autopilot-toggle locked active" title="Autopilot is locked while a schedule is active">';
+      html += timedLabel;
+      html += '</span>';
+    } else {
+      html += '<button class="autopilot-toggle' + (task.autopilot ? ' active' : '') + '" onclick="App.toggleTaskAutopilot()" title="Toggle autopilot mode">';
+      html += '&#9881; Autopilot ' + (task.autopilot ? 'ON' : 'OFF');
+      html += '</button>';
     }
 
     html += '<span class="pipeline-gap"></span>';
@@ -1785,7 +2715,16 @@
       else if (isPast) cls += ' status-step-past';
 
       if (s.action) {
-        html += '<button class="' + cls + '" onclick="App.changeTaskStatus(\'' + s.action + '\')" title="Set to ' + s.label + '">';
+        var onclick, title;
+        if (s.guardIfNoPlan && !hasPlan) {
+          onclick = 'App.acceptWithoutPlanGuard()';
+          title = 'Accept - no plan submitted yet';
+          cls += ' status-step-no-plan';
+        } else {
+          onclick = 'App.changeTaskStatus(\'' + s.action + '\')';
+          title = 'Set to ' + s.label;
+        }
+        html += '<button class="' + cls + '" onclick="' + onclick + '" title="' + title + '">';
         html += '<span class="status-step-icon">' + s.icon + '</span>';
         html += '<span class="status-step-label">' + s.label + '</span>';
         html += '</button>';
@@ -1798,10 +2737,27 @@
       if (i < steps.length - 1) html += '<span class="status-step-arrow' + (isPast ? ' status-step-arrow-past' : '') + '">&#8250;</span>';
     }
 
-    // Side states (improve, hold, cancel)
+    // Side states (improve, schedule, hold, cancel)
     for (var j = 0; j < sideStates.length; j++) {
       var ss = sideStates[j];
       var isActiveSide = ss.key === current;
+
+      // Schedule button: only in pending_approval and hold, hidden for recurring/timed tasks
+      if (ss.isSchedule) {
+        var isRecurring = !!(task.interval && task.intervalUnit);
+        var showSchedule = (current === 'pending_approval' || current === 'hold') && !isRecurring;
+        if (!showSchedule) continue;
+        var hasSchedule = !!task.scheduledAt;
+        var schedCls = 'status-step status-step-side' + (hasSchedule ? ' status-step-scheduled' : '');
+        var schedTitle = hasSchedule ? 'Scheduled - click to change' : 'Schedule for later';
+        var clockSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+        html += '<button class="' + schedCls + '" onclick="App.openSchedulePopover(event)" title="' + schedTitle + '">';
+        html += '<span class="status-step-icon">' + clockSvg + '</span>';
+        html += '<span class="status-step-label">' + ss.label + '</span>';
+        html += '</button>';
+        continue;
+      }
+
       if (ss.needsFeedback) {
         html += '<button class="status-step status-step-side' + (isActiveSide ? ' status-step-active' : '') + '" onclick="App.toggleFeedback()" title="Send feedback for revision">';
       } else {
@@ -1823,12 +2779,54 @@
     html += '</div>';
     html += '</div>';
 
+    // Schedule panel (for timed tasks)
+    if (task.interval || task.scheduledAt) {
+      var isRecurring = !!(task.interval && task.intervalUnit);
+      html += '<div class="schedule-section">';
+      html += '<div class="schedule-section-header"><span>Schedule</span><span class="schedule-type-pill">' + (isRecurring ? 'Recurring' : 'One-time') + '</span></div>';
+      if (isRecurring) {
+        html += '<div class="schedule-data-row"><span class="label">Repeats:</span><span class="value">Every ' + task.interval + ' ' + (task.intervalUnit || '') + '</span></div>';
+        if (task.nextRun) {
+          var nr = new Date(task.nextRun);
+          html += '<div class="schedule-data-row"><span class="label">Next run:</span><span class="value">' + timeAgo(task.nextRun) + ' (' + nr.toLocaleString() + ')</span></div>';
+        }
+        if (task.lastRun) {
+          var lr = new Date(task.lastRun);
+          html += '<div class="schedule-data-row"><span class="label">Last run:</span><span class="value">' + timeAgo(task.lastRun) + ' (' + lr.toLocaleString() + ')</span></div>';
+        }
+        if (task.runCount) {
+          html += '<div class="schedule-data-row"><span class="label">Run count:</span><span class="value">' + task.runCount + '</span></div>';
+        }
+        var schedStatus = task.status === 'hold' ? '<span class="schedule-status-paused">Paused</span>' : '<span class="schedule-status-active">Active</span>';
+        html += '<div class="schedule-data-row"><span class="label">Status:</span><span class="value">' + schedStatus + '</span></div>';
+        html += '<div class="schedule-actions">';
+        if (task.status === 'hold') {
+          html += '<button class="btn btn-secondary" onclick="App.resumeSchedule(\'' + task.id + '\')">Resume Schedule</button>';
+        } else {
+          html += '<button class="btn btn-secondary" onclick="App.pauseSchedule(\'' + task.id + '\')">Pause Schedule</button>';
+        }
+        html += '<button class="btn btn-secondary" onclick="App.editAutopilot(\'' + task.id + '\')">Edit Interval</button>';
+        html += '<button class="btn-danger-subtle" onclick="App.removeSchedule(\'' + task.id + '\')">Remove Schedule</button>';
+        html += '</div>';
+      } else {
+        // One-time scheduled
+        var sa = new Date(task.scheduledAt);
+        html += '<div class="schedule-data-row"><span class="label">Fires at:</span><span class="value">' + sa.toLocaleString() + ' (' + timeAgo(task.scheduledAt) + ')</span></div>';
+        html += '<div class="schedule-data-row"><span class="label">Status:</span><span class="value"><span class="schedule-status-waiting">Waiting</span></span></div>';
+        html += '<div class="schedule-actions">';
+        html += '<button class="btn btn-secondary" onclick="App.editScheduledAt(\'' + task.id + '\')">Edit Time</button>';
+        html += '<button class="btn-danger-subtle" onclick="App.removeSchedule(\'' + task.id + '\')">Remove Schedule</button>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
     // Feedback area (hidden by default)
     html += '<div id="task-feedback-area" class="task-feedback-area hidden">';
     html += '<textarea id="task-review-comments" placeholder="Write feedback for the agent..."></textarea>';
     html += '<div class="task-feedback-actions">';
     html += '<button class="btn btn-primary" onclick="App.reviewTask(\'improve\')">Send Feedback</button>';
-    html += '<button class="attach-image-btn" onclick="App.attachTaskImage()" title="Paste image from clipboard">&#128203; Attach Image</button>';
+    html += '<button class="attach-image-btn" onclick="App.attachTaskImage()" title="Paste image from clipboard"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg> Attach Image</button>';
     html += '<button class="btn btn-secondary" onclick="App.toggleFeedback()">Cancel</button>';
     html += '</div>';
     html += '<div id="feedback-image-area"></div>';
@@ -1876,6 +2874,132 @@
     return -1;
   }
 
+  // ── Schedule Popover (deferred accept) ──────────────
+  function openSchedulePopover(evt) {
+    // Remove any existing popover
+    var existing = document.querySelector('.schedule-popover');
+    if (existing) { existing.remove(); return; }
+
+    var btn = evt.currentTarget;
+    var rect = btn.getBoundingClientRect();
+    var id = state.currentTaskId;
+    if (!id) return;
+
+    var task = (state.tasks || []).find(function(t) { return t.id === id; });
+    var existingSchedule = task && task.scheduledAt ? new Date(task.scheduledAt) : null;
+
+    // Build popover HTML
+    var pop = document.createElement('div');
+    pop.className = 'schedule-popover';
+
+    // Datetime input
+    var now = new Date();
+    var minDt = now.toISOString().slice(0, 16);
+    var currentVal = existingSchedule ? new Date(existingSchedule.getTime() - existingSchedule.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+
+    var h = '<div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px">Schedule for later</div>';
+    h += '<input type="datetime-local" id="schedule-datetime" min="' + minDt + '" value="' + currentVal + '">';
+
+    // Quick presets
+    h += '<div class="schedule-popover-presets">';
+    h += '<button class="schedule-preset-btn" onclick="App.schedulePreset(\'1h\')">In 1 hour</button>';
+    h += '<button class="schedule-preset-btn" onclick="App.schedulePreset(\'tomorrow9\')">Tomorrow 9 AM</button>';
+    h += '<button class="schedule-preset-btn" onclick="App.schedulePreset(\'monday9\')">Next Monday 9 AM</button>';
+    h += '</div>';
+
+    // Action buttons
+    h += '<div class="schedule-popover-actions">';
+    h += '<button class="schedule-confirm-btn" onclick="App.confirmSchedule()">Confirm</button>';
+    if (existingSchedule) {
+      h += '<button class="schedule-clear-btn" onclick="App.clearSchedule()">Clear</button>';
+    }
+    h += '</div>';
+
+    pop.innerHTML = h;
+
+    // Position below the button
+    document.body.appendChild(pop);
+    var popRect = pop.getBoundingClientRect();
+    var top = rect.bottom + 4;
+    var left = rect.left;
+    // Keep within viewport
+    if (left + popRect.width > window.innerWidth) left = window.innerWidth - popRect.width - 8;
+    if (top + popRect.height > window.innerHeight) top = rect.top - popRect.height - 4;
+    pop.style.position = 'fixed';
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+
+    // Click outside to close
+    setTimeout(function() {
+      document.addEventListener('click', closeSchedulePopoverOutside);
+    }, 0);
+  }
+
+  function closeSchedulePopoverOutside(evt) {
+    var pop = document.querySelector('.schedule-popover');
+    if (pop && !pop.contains(evt.target) && !evt.target.closest('.status-step-scheduled, .status-step-side[onclick*="openSchedulePopover"]')) {
+      pop.remove();
+      document.removeEventListener('click', closeSchedulePopoverOutside);
+    }
+  }
+
+  function schedulePreset(preset) {
+    var input = document.getElementById('schedule-datetime');
+    if (!input) return;
+    var d = new Date();
+    if (preset === '1h') {
+      d.setHours(d.getHours() + 1);
+    } else if (preset === 'tomorrow9') {
+      d.setDate(d.getDate() + 1);
+      d.setHours(9, 0, 0, 0);
+    } else if (preset === 'monday9') {
+      var day = d.getDay();
+      var daysUntilMon = day === 0 ? 1 : (8 - day);
+      d.setDate(d.getDate() + daysUntilMon);
+      d.setHours(9, 0, 0, 0);
+    }
+    // Format for datetime-local input (local time)
+    var iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    input.value = iso;
+  }
+
+  async function confirmSchedule() {
+    var input = document.getElementById('schedule-datetime');
+    if (!input || !input.value) { toast('Pick a date and time', 'warning'); return; }
+
+    var dt = new Date(input.value);
+    if (dt <= new Date()) { toast('Cannot schedule in the past', 'error'); return; }
+
+    var id = state.currentTaskId;
+    if (!id) return;
+
+    try {
+      await api.put('/api/tasks/' + id, { scheduledAt: dt.toISOString() });
+      toast('Scheduled for ' + dt.toLocaleString());
+      var pop = document.querySelector('.schedule-popover');
+      if (pop) pop.remove();
+      document.removeEventListener('click', closeSchedulePopoverOutside);
+      await openTask(id);
+    } catch(e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
+
+  async function clearSchedule() {
+    var id = state.currentTaskId;
+    if (!id) return;
+    try {
+      await api.put('/api/tasks/' + id, { scheduledAt: null });
+      toast('Schedule cleared');
+      var pop = document.querySelector('.schedule-popover');
+      if (pop) pop.remove();
+      document.removeEventListener('click', closeSchedulePopoverOutside);
+      await openTask(id);
+    } catch(e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
+
   function toggleFeedback() {
     var area = document.getElementById('task-feedback-area');
     if (area) area.classList.toggle('hidden');
@@ -1887,6 +3011,16 @@
     try {
       var task = await api.get('/api/tasks/' + id);
       var newVal = !task.autopilot;
+      // Confirm before enabling autopilot (higher-risk action)
+      if (newVal) {
+        var ok = await confirmAction({
+          title: 'Enable Autopilot?',
+          message: 'Autopilot lets the agent execute without waiting for your approval. You can turn it off at any time.',
+          confirmLabel: 'Enable',
+          variant: 'neutral'
+        });
+        if (!ok) return;
+      }
       await api.put('/api/tasks/' + id, { autopilot: newVal });
       toast('Autopilot ' + (newVal ? 'enabled' : 'disabled'));
       await openTask(id);
@@ -2024,20 +3158,9 @@
     var id = state.currentTaskId;
     if (!id) return;
 
-    // Confirmation for Accept
-    if (newStatus === 'accept') {
-      var ok = await confirmAction({
-        title: 'Accept this task?',
-        message: 'This will approve the work and trigger the agent to execute.',
-        confirmLabel: 'Accept',
-        variant: 'neutral'
-      });
-      if (!ok) return;
-    }
-
     try {
       // Actions that go through the action handler (write version timeline)
-      var actionStatuses = { accept: true, close: true };
+      var actionStatuses = { accept: true, done: true, close: true };
       if (actionStatuses[newStatus]) {
         await api.put('/api/tasks/' + id, { action: newStatus });
       } else {
@@ -2046,7 +3169,7 @@
       var labels = {
         planning: 'Set to planning', pending_approval: 'Pending review',
         working: 'Working', accept: 'Accepted',
-        close: 'Closed', done: 'Done', hold: 'On hold', cancelled: 'Cancelled'
+        done: 'Done', close: 'Closed', hold: 'On hold', cancelled: 'Cancelled'
       };
       toast(labels[newStatus] || 'Status updated');
 
@@ -2054,7 +3177,7 @@
       if (newStatus === 'accept') {
         if (termWs && termWs.readyState === 1) {
           var task = await api.get('/api/tasks/' + id);
-          var msg = 'Task ' + id + ' "' + task.title + '" was accepted by the owner. Launch the assigned agent to execute it.\r';
+          var msg = 'Task ' + id + ' "' + task.title + '" was accepted and is now working. Launch the assigned agent to execute it.\r';
           termWs.send(JSON.stringify({ type: 'input', data: msg }));
         } else {
           toast('Terminal not connected - tell the orchestrator manually', 'warning');
@@ -2067,6 +3190,24 @@
     }
   }
 
+
+  async function acceptWithoutPlanGuard() {
+    var ok = await confirmAction({
+      title: 'No plan submitted yet',
+      message: 'The agent has not submitted a plan yet. You can switch to autopilot mode to skip the review step, or wait for the agent to submit a plan.',
+      confirmLabel: 'Switch to Autopilot & Accept',
+      variant: 'warning'
+    });
+    if (!ok) return;
+    var id = state.currentTaskId;
+    if (!id) return;
+    try {
+      await api.put('/api/tasks/' + id, { autopilot: true });
+      await changeTaskStatus('accept');
+    } catch(e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
 
   async function reviewTask(action) {
     var id = state.currentTaskId;
@@ -2237,7 +3378,7 @@
           '<textarea class="file-preview-feedback-textarea" placeholder="Write feedback for the agent..."></textarea>' +
           '<div class="file-preview-feedback-actions">' +
             '<button class="btn btn-primary" onclick="App.submitPreviewFeedback()">Send Feedback</button>' +
-            '<button class="attach-image-btn" onclick="App.attachPreviewImage()" title="Paste image from clipboard">&#128203; Attach Image</button>' +
+            '<button class="attach-image-btn" onclick="App.attachPreviewImage()" title="Paste image from clipboard"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg> Attach Image</button>' +
             '<button class="btn btn-secondary" onclick="App.togglePreviewFeedback()">Cancel</button>' +
           '</div>' +
           '<div class="file-preview-feedback-images"></div>' +
@@ -2394,14 +3535,31 @@
 
   // ── Knowledge Base ──────────────────────────────
   var knowledgeFilter = 'all';
+  var knowledgeFolderFilter = null; // null = all, string = specific folder, '__uncategorized__' = no folder
+  var _kbAllDocs = []; // cached for folder operations
 
   async function loadKnowledge() {
     try {
       var data = await api.get('/api/knowledge');
       var docs = data.documents || [];
+      _kbAllDocs = docs;
 
-      // Apply filter
-      var filtered = knowledgeFilter === 'all' ? docs : docs.filter(function(d) { return d.category === knowledgeFilter; });
+      // Build folder sidebar (include stored empty folders)
+      var storedFolders = data.folders || [];
+      renderKbFolderSidebar(docs, storedFolders);
+
+      // Apply folder filter
+      var filtered = docs;
+      if (knowledgeFolderFilter === '__uncategorized__') {
+        filtered = filtered.filter(function(d) { return !d.folder; });
+      } else if (knowledgeFolderFilter) {
+        filtered = filtered.filter(function(d) { return d.folder === knowledgeFolderFilter; });
+      }
+
+      // Apply category filter
+      if (knowledgeFilter !== 'all') {
+        filtered = filtered.filter(function(d) { return d.category === knowledgeFilter; });
+      }
 
       var grid = document.getElementById('knowledge-grid');
       if (filtered.length === 0) {
@@ -2416,13 +3574,13 @@
           var found = state.agents.find(function(a) { return a.id === doc.authorAgentId; });
           if (found) agentName = found.name;
         }
-        // Check staleness (>30 days)
         var isStale = doc.updatedAt && (Date.now() - new Date(doc.updatedAt).getTime() > 30 * 24 * 60 * 60 * 1000);
         var staleHtml = isStale ? ' <span class="badge badge-stale">stale</span>' : '';
 
         var tagsHtml = (doc.tags || []).map(function(t) { return '<span class="tag-badge">' + escHtml(t) + '</span>'; }).join('');
+        var folderHtml = doc.folder ? '<div class="knowledge-card-folder">' + escHtml(doc.folder) + '</div>' : '';
 
-        return '<div class="knowledge-card" onclick="App.openKnowledgeDoc(\'' + doc.id + '\')">' +
+        return '<div class="knowledge-card" draggable="true" data-kb-id="' + doc.id + '" onclick="App.openKnowledgeDoc(\'' + doc.id + '\')" ondragstart="App.kbDragStart(event)" ondragend="App.kbDragEnd(event)">' +
           '<div class="knowledge-card-info">' +
             '<div class="knowledge-card-title">' + escHtml(doc.title) + staleHtml + '</div>' +
             '<div class="knowledge-card-meta">' +
@@ -2430,12 +3588,187 @@
               (agentName ? '<span>' + escHtml(agentName) + '</span>' : '') +
               '<span>' + (doc.createdAt ? new Date(doc.createdAt).toLocaleDateString() : '') + '</span>' +
             '</div>' +
+            folderHtml +
             (tagsHtml ? '<div class="knowledge-card-tags" style="margin-top:4px">' + tagsHtml + '</div>' : '') +
           '</div>' +
         '</div>';
       }).join('');
     } catch(e) {
       console.error('Failed to load knowledge:', e);
+    }
+  }
+
+  function renderKbFolderSidebar(docs, storedFolders) {
+    var folderCounts = {};
+    var uncatCount = 0;
+    // Include stored empty folders with count 0
+    (storedFolders || []).forEach(function(f) {
+      if (!folderCounts[f]) folderCounts[f] = 0;
+    });
+    docs.forEach(function(d) {
+      if (d.folder) {
+        folderCounts[d.folder] = (folderCounts[d.folder] || 0) + 1;
+      } else {
+        uncatCount++;
+      }
+    });
+    var folderNames = Object.keys(folderCounts).sort();
+
+    var listEl = document.getElementById('kb-folder-list');
+    if (!listEl) return;
+
+    var html = '<div class="kb-folder-item' + (knowledgeFolderFilter === null ? ' active' : '') + '" onclick="App.filterKbFolder(null)" data-kb-folder="__all__" ondragover="App.kbFolderDragOver(event)" ondrop="App.kbFolderDrop(event, null)" ondragleave="App.kbFolderDragLeave(event)">' +
+      '<span>All Documents</span><span class="kb-folder-count">' + docs.length + '</span></div>';
+
+    folderNames.forEach(function(name) {
+      var isActive = knowledgeFolderFilter === name;
+      var escapedName = escHtml(name).replace(/'/g, "\\'");
+      html += '<div class="kb-folder-item' + (isActive ? ' active' : '') + '" onclick="App.filterKbFolder(\'' + escapedName + '\')" data-kb-folder="' + escHtml(name) + '" ondragover="App.kbFolderDragOver(event)" ondrop="App.kbFolderDrop(event, \'' + escapedName + '\')" ondragleave="App.kbFolderDragLeave(event)">' +
+        '<span>' + escHtml(name) + '</span>' +
+        '<span style="display:flex;align-items:center;gap:2px">' +
+          '<span class="kb-folder-count">' + folderCounts[name] + '</span>' +
+          '<button class="kb-folder-delete" onclick="event.stopPropagation();App.deleteKbFolder(\'' + escapedName + '\')" title="Delete folder">&times;</button>' +
+        '</span></div>';
+    });
+
+    html += '<div class="kb-folder-item' + (knowledgeFolderFilter === '__uncategorized__' ? ' active' : '') + '" onclick="App.filterKbFolder(\'__uncategorized__\')" data-kb-folder="__uncategorized__" ondragover="App.kbFolderDragOver(event)" ondrop="App.kbFolderDrop(event, null)" ondragleave="App.kbFolderDragLeave(event)">' +
+      '<span>Uncategorized</span><span class="kb-folder-count">' + uncatCount + '</span></div>';
+
+    listEl.innerHTML = html;
+  }
+
+  function filterKbFolder(folder) {
+    knowledgeFolderFilter = folder;
+    loadKnowledge();
+  }
+
+  async function createKbFolder() {
+    var name = prompt('Enter folder name:');
+    if (!name || !name.trim()) return;
+    try {
+      await api.post('/api/knowledge/folders', { name: name.trim() });
+      knowledgeFolderFilter = name.trim();
+      loadKnowledge();
+      toast('Folder "' + name.trim() + '" created - drag documents here to organize');
+    } catch(e) {
+      toast('Failed to create folder', 'error');
+    }
+  }
+
+  async function deleteKbFolder(folderName) {
+    var docsInFolder = _kbAllDocs.filter(function(d) { return d.folder === folderName; });
+    var confirmed = await confirmAction({
+      title: 'Delete folder',
+      message: 'Delete folder "' + folderName + '"?' + (docsInFolder.length ? ' It contains ' + docsInFolder.length + ' document' + (docsInFolder.length > 1 ? 's' : '') + '.' : ''),
+      confirmLabel: 'Delete',
+    });
+    if (!confirmed) return;
+
+    if (docsInFolder.length > 0) {
+      var deleteDocsConfirmed = await confirmAction({
+        title: 'Delete documents?',
+        message: 'Also delete all ' + docsInFolder.length + ' document' + (docsInFolder.length > 1 ? 's' : '') + ' in this folder? Click "Delete documents" to permanently remove them, or Cancel to move them to Uncategorized instead.',
+        confirmLabel: 'Delete documents',
+      });
+      if (deleteDocsConfirmed) {
+        // Delete all docs in folder
+        for (var i = 0; i < docsInFolder.length; i++) {
+          try { await api.del('/api/knowledge/' + docsInFolder[i].id); } catch(e) { /* continue */ }
+        }
+        toast('Folder and ' + docsInFolder.length + ' document' + (docsInFolder.length > 1 ? 's' : '') + ' deleted');
+      } else {
+        // Move all docs to uncategorized
+        for (var i = 0; i < docsInFolder.length; i++) {
+          try { await api.put('/api/knowledge/' + docsInFolder[i].id, { folder: null }); } catch(e) { /* continue */ }
+        }
+        toast('Documents moved to Uncategorized, folder deleted');
+      }
+    } else {
+      toast('Folder "' + folderName + '" deleted');
+    }
+
+    // Remove folder from server
+    try { await api.del('/api/knowledge/folders/' + encodeURIComponent(folderName)); } catch(e) { /* continue */ }
+
+    // Reset filter if we were viewing the deleted folder
+    if (knowledgeFolderFilter === folderName) {
+      knowledgeFolderFilter = null;
+    }
+    loadKnowledge();
+  }
+
+  async function moveKbDocToFolder(docId, folder) {
+    try {
+      await api.put('/api/knowledge/' + docId, { folder: folder || null });
+      toast(folder ? 'Moved to ' + folder : 'Moved to Uncategorized');
+      loadKnowledge();
+    } catch(e) {
+      toast('Failed to move document', 'error');
+    }
+  }
+
+  // Move from detail view
+  async function moveKbDoc() {
+    if (!state._currentKnowledgeId) return;
+    // Build list of existing folders
+    var folders = [];
+    _kbAllDocs.forEach(function(d) {
+      if (d.folder && folders.indexOf(d.folder) < 0) folders.push(d.folder);
+    });
+    folders.sort();
+
+    var options = ['Uncategorized (remove from folder)'].concat(folders).concat(['-- New Folder --']);
+    var choice = prompt('Move to folder:\n' + options.map(function(o, i) { return (i) + ': ' + o; }).join('\n') + '\n\nEnter number or folder name:');
+    if (choice === null) return;
+
+    var target = null;
+    var idx = parseInt(choice);
+    if (!isNaN(idx) && idx >= 0 && idx < options.length) {
+      if (idx === 0) target = null;
+      else if (idx === options.length - 1) {
+        target = prompt('New folder name:');
+        if (!target || !target.trim()) return;
+        target = target.trim();
+      } else {
+        target = folders[idx - 1];
+      }
+    } else {
+      target = choice.trim() || null;
+    }
+
+    await moveKbDocToFolder(state._currentKnowledgeId, target);
+    // Refresh detail view
+    openKnowledgeDoc(state._currentKnowledgeId);
+  }
+
+  // Drag and drop handlers
+  var _kbDragDocId = null;
+  function kbDragStart(e) {
+    _kbDragDocId = e.currentTarget.dataset.kbId;
+    e.currentTarget.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', _kbDragDocId);
+  }
+  function kbDragEnd(e) {
+    e.currentTarget.classList.remove('dragging');
+    _kbDragDocId = null;
+    // Remove all drag-over highlights
+    document.querySelectorAll('.kb-folder-item.drag-over').forEach(function(el) { el.classList.remove('drag-over'); });
+  }
+  function kbFolderDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    e.currentTarget.classList.add('drag-over');
+  }
+  function kbFolderDragLeave(e) {
+    e.currentTarget.classList.remove('drag-over');
+  }
+  function kbFolderDrop(e, folder) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    var docId = e.dataTransfer.getData('text/plain') || _kbDragDocId;
+    if (docId) {
+      moveKbDocToFolder(docId, folder);
     }
   }
 
@@ -2466,6 +3799,7 @@
       }
       var isStale = meta.updatedAt && (Date.now() - new Date(meta.updatedAt).getTime() > 30 * 24 * 60 * 60 * 1000);
       var metaHtml = '<span class="badge ' + catClass + '">' + escHtml(meta.category || 'reference') + '</span>';
+      if (meta.folder) metaHtml += '<span style="color:var(--text-dim)">Folder: ' + escHtml(meta.folder) + '</span>';
       if (agentName) metaHtml += '<span>By: ' + escHtml(agentName) + '</span>';
       metaHtml += '<span>' + (meta.createdAt ? new Date(meta.createdAt).toLocaleDateString() : '') + '</span>';
       if (meta.tags && meta.tags.length) metaHtml += meta.tags.map(function(t) { return '<span class="tag-badge">' + escHtml(t) + '</span>'; }).join('');
@@ -2477,7 +3811,7 @@
       var summaryPanel = document.getElementById('knowledge-summary-panel');
       if (meta.summary) {
         summaryPanel.style.display = '';
-        document.getElementById('knowledge-detail-summary').textContent = meta.summary;
+        try { document.getElementById('knowledge-detail-summary').innerHTML = renderMarkdown(meta.summary); } catch(e) { document.getElementById('knowledge-detail-summary').textContent = meta.summary; }
       } else {
         summaryPanel.style.display = 'none';
       }
@@ -2808,10 +4142,10 @@
         container.innerHTML = '<span>&#9888; No vault configured yet</span>';
       } else if (status.locked) {
         container.className = 'vault-status-bar locked';
-        container.innerHTML = '<span>&#128274; Vault is locked</span>';
+        container.innerHTML = '<span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Vault is locked</span>';
       } else {
         container.className = 'vault-status-bar unlocked';
-        container.innerHTML = '<span>&#128275; Vault unlocked</span><button class="btn btn-secondary" onclick="App.lockSecrets()" style="font-size:11px;padding:3px 10px;margin-left:auto">Lock</button>';
+        container.innerHTML = '<span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg> Vault unlocked</span><button class="btn btn-secondary" onclick="App.lockSecrets()" style="font-size:11px;padding:3px 10px;margin-left:auto">Lock</button>';
       }
     }).catch(function() {
       container.className = 'vault-status-bar not-configured';
@@ -2826,6 +4160,8 @@
       document.getElementById('settings-team-name').textContent = sys.teamName || '-';
       document.getElementById('settings-version').textContent = 'v' + (sys.version || '1.0.0');
       document.getElementById('settings-agent-count').textContent = (agents.agents || []).length;
+      var helpVer = document.getElementById('settings-help-version');
+      if (helpVer) helpVer.textContent = 'v' + (sys.version || '1.0.0');
     } catch(e) { console.error('Failed to load settings:', e); }
     checkClaudeStatus();
     loadPermissionMode();
@@ -2838,6 +4174,8 @@
     loadBackupList();
     renderVaultStatusBar('vault-status-bar-secrets');
     renderVaultStatusBar('vault-status-bar-passwords');
+    loadNotifPrefs();
+    renderModelRoutingSettings();
     // Restore last active section
     if (state.settingsSection) {
       switchSettingsSection(state.settingsSection);
@@ -2951,6 +4289,18 @@
     toast('Server restarting...');
     // Wait and reload
     setTimeout(function() { location.reload(); }, 4000);
+  }
+
+  function runHealthCheck() {
+    if (!termWs || termWs.readyState !== 1) {
+      toast('Terminal not connected - open the Command Center first', 'warning');
+      return;
+    }
+    var msg = 'A system health check was requested. Call GET /api/health to verify all system components. Check for any failures or warnings and report results. If any issues are found, attempt to fix them by rebuilding context (POST /api/rebuild-context). Report the final status.\r';
+    termWs.send(JSON.stringify({ type: 'input', data: msg }));
+    toast('Health check sent to CLI');
+    // Switch to command center so user can see the output
+    navigate('command-center');
   }
 
   async function resetSystem() {
@@ -3569,8 +4919,21 @@
         // Hide actions, show done message
         var actionsEl = document.getElementById('upgrade-actions');
         if (actionsEl) actionsEl.style.display = 'none';
-        // Auto-close modal after a moment
-        setTimeout(function() { closeUpgradeModal(); }, 2000);
+        // Set flag so health check auto-triggers after reload
+        localStorage.setItem('pendingHealthCheck', '1');
+        // Auto-close modal, then poll for server to come back and reload
+        setTimeout(function() {
+          closeUpgradeModal();
+          toast('Waiting for server to restart...');
+          var pollInterval = setInterval(function() {
+            fetch('/api/health').then(function(r) {
+              if (r.ok) {
+                clearInterval(pollInterval);
+                location.reload();
+              }
+            }).catch(function() { /* server still down, keep polling */ });
+          }, 2000);
+        }, 2000);
       } else {
         upgradeFailed = true;
         upgradeError = result.message || 'Upgrade failed';
@@ -3733,30 +5096,126 @@
     if (overlay) overlay.classList.add('hidden');
   }
 
-  // ── Claude Account Status ─────────────────────────
+  // ── Claude Account Management ─────────────────────
   async function checkClaudeStatus() {
-    var installedEl = document.getElementById('claude-installed');
-    var versionEl = document.getElementById('claude-version');
-    if (!installedEl || !versionEl) return;
+    // Legacy compat - now delegates to loadClaudeAccount
+    loadClaudeAccount();
+  }
 
-    installedEl.textContent = 'Checking...';
-    installedEl.className = 'badge badge-inactive';
-    versionEl.textContent = '-';
+  async function loadClaudeAccount() {
+    var statusBox = document.getElementById('claude-conn-status');
+    var dotEl = document.getElementById('claude-conn-dot');
+    var labelEl = document.getElementById('claude-conn-label');
+    var detailEl = document.getElementById('claude-conn-detail');
+    var cliCard = document.getElementById('claude-cli-card');
+    var apiCard = document.getElementById('claude-api-card');
+    var cliPathEl = document.getElementById('claude-cli-path');
+    if (!statusBox) return;
 
     try {
-      var result = await api.get('/api/claude/status');
-      if (result.installed) {
-        installedEl.textContent = 'Installed';
-        installedEl.className = 'badge badge-active';
-        versionEl.textContent = result.version || 'Unknown';
+      var conn = await api.get('/api/claude/connection');
+      var method = conn.method;
+      var connected = false;
+
+      // Update CLI card details
+      if (conn.cli && conn.cli.installed) {
+        if (cliPathEl) cliPathEl.textContent = 'CLI: ' + (conn.cli.path || 'detected') + (conn.cli.version ? ' - ' + conn.cli.version : '');
       } else {
-        installedEl.textContent = 'Not Installed';
-        installedEl.className = 'badge badge-inactive';
-        versionEl.textContent = '-';
+        if (cliPathEl) cliPathEl.textContent = 'CLI not detected';
+      }
+
+      // Determine connection state
+      if (method === 'cli' && conn.cli && conn.cli.installed) {
+        connected = true;
+        labelEl.textContent = 'Connected via Account (CLI)';
+        detailEl.textContent = 'Claude CLI ' + (conn.cli.version || '');
+      } else if (method === 'api' && conn.hasApiKey) {
+        connected = true;
+        labelEl.textContent = 'Connected via API Token';
+        detailEl.textContent = 'API key configured';
+      } else if (method === 'cli') {
+        labelEl.textContent = 'CLI Selected but Not Detected';
+        detailEl.textContent = 'Install Claude CLI to complete connection';
+      } else if (method === 'api') {
+        labelEl.textContent = 'API Selected but No Key';
+        detailEl.textContent = 'Add an API key to complete connection';
+      } else {
+        labelEl.textContent = 'Not Connected';
+        detailEl.textContent = 'No Claude connection configured';
+      }
+
+      // Update status styling
+      statusBox.className = 'claude-conn-status ' + (connected ? 'claude-conn-connected' : 'claude-conn-disconnected');
+
+      // Highlight active method card
+      if (cliCard) { cliCard.classList.toggle('active', method === 'cli'); }
+      if (apiCard) { apiCard.classList.toggle('active', method === 'api'); }
+
+      // Orchivra standalone: no plan gating - both methods always available
+    } catch(e) {
+      labelEl.textContent = 'Error';
+      detailEl.textContent = 'Failed to check connection status';
+    }
+  }
+
+  async function refreshClaudeStatus() {
+    loadClaudeAccount();
+  }
+
+  async function switchClaudeMethod(method) {
+    try {
+      await api.put('/api/claude/connection', { method: method });
+      loadClaudeAccount();
+    } catch(e) {
+      console.error('Failed to switch Claude method:', e);
+    }
+  }
+
+  async function verifyClaudeCli() {
+    var statusEl = document.getElementById('claude-cli-verify-status');
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-muted)">Detecting Claude CLI...</span>';
+    try {
+      var result = await api.post('/api/setup/claude-check');
+      if (result.found) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">CLI found at ' + result.path + '</span>';
+        // Auto-switch to CLI method
+        await api.put('/api/claude/connection', { method: 'cli' });
+        loadClaudeAccount();
+      } else {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Claude CLI not found. Install it first.</span>';
       }
     } catch(e) {
-      installedEl.textContent = 'Error';
-      installedEl.className = 'badge badge-inactive';
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Detection failed</span>';
+    }
+  }
+
+  async function updateClaudeApiKey() {
+    var input = document.getElementById('claude-api-key-input');
+    if (!input || !input.value.trim()) return;
+    var key = input.value.trim();
+    if (key.indexOf('sk-ant-') !== 0) {
+      toast('Invalid key format. Should start with sk-ant-', 'error');
+      return;
+    }
+    try {
+      await api.post('/api/secrets', { name: 'ANTHROPIC_API_KEY', value: key });
+      await api.put('/api/claude/connection', { method: 'api' });
+      input.value = '';
+      toast('API key saved', 'success');
+      loadClaudeAccount();
+    } catch(e) {
+      toast('Failed to save API key', 'error');
+    }
+  }
+
+  async function disconnectClaude() {
+    if (!confirm('Disconnect Claude? This will clear the connection method.')) return;
+    try {
+      await api.put('/api/claude/connection', { method: null });
+      loadClaudeAccount();
+      toast('Claude disconnected', 'success');
+    } catch(e) {
+      toast('Failed to disconnect', 'error');
     }
   }
 
@@ -3789,8 +5248,12 @@
 
   async function loadMedia() {
     try {
-      var mediaFiles = await loadMediaRecursive('data/media', '');
+      var results = await Promise.all([loadMediaRecursive('data/media', ''), loadMediaMetadata()]);
+      var mediaFiles = results[0];
+      var metadata = results[1] || {};
       var el = document.getElementById('media-grid');
+      // Filter out _index.json from file list
+      mediaFiles = mediaFiles.filter(function(f) { return f.name !== '_index.json'; });
       if (state.mediaFilter && state.mediaFilter !== 'all') {
         var extMap = { image: IMAGE_EXTS, video: VIDEO_EXTS, document: DOC_EXTS };
         var allowedExts = extMap[state.mediaFilter] || [];
@@ -3812,16 +5275,18 @@
         var truncName = displayName.length > 20 ? displayName.slice(0, 17) + '...' : displayName;
         var subdir = f.name.indexOf('/') >= 0 ? f.name.substring(0, f.name.lastIndexOf('/')) : '';
         var subdirBadge = subdir ? '<span style="font-size:10px;color:var(--text-muted);display:block;overflow:hidden;text-overflow:ellipsis">' + escHtml(subdir) + '</span>' : '';
+        var meta = metadata[f.name] || {};
+        var tagsBadge = (meta.tags && meta.tags.length > 0) ? '<div class="media-thumb-tags">' + meta.tags.map(function(t) { return '<span class="tag-badge tag-badge-sm">' + escHtml(t) + '</span>'; }).join('') + '</div>' : '';
         // Encode path segments individually to support subdirectories
         var encodedPath = f.name.split('/').map(encodeURIComponent).join('/');
         if (isImage) {
           return '<div class="media-thumb" onclick="App.openMediaPreview(\'' + escHtml(f.name.replace(/'/g, "\\'")) + '\',\'' + typeStr + '\')">' +
-            '<img src="/api/media/files/' + encodedPath + '" alt="' + escHtml(f.name) + '">' +
-            '<div class="media-thumb-info">' + subdirBadge + '<span class="media-thumb-name" title="' + escHtml(f.name) + '">' + escHtml(truncName) + '</span></div></div>';
+            '<img src="/api/raw/data/media/' + encodedPath + '" alt="' + escHtml(f.name) + '">' +
+            '<div class="media-thumb-info">' + subdirBadge + '<span class="media-thumb-name" title="' + escHtml(f.name) + '">' + escHtml(truncName) + '</span>' + tagsBadge + '</div></div>';
         }
         return '<div class="media-thumb" onclick="App.openMediaPreview(\'' + escHtml(f.name.replace(/'/g, "\\'")) + '\',\'' + typeStr + '\')">' +
           '<div class="media-thumb-icon">' + mediaTypeIcon(ext) + '</div>' +
-          '<div class="media-thumb-info">' + subdirBadge + '<span class="media-thumb-name" title="' + escHtml(f.name) + '">' + escHtml(truncName) + '</span></div></div>';
+          '<div class="media-thumb-info">' + subdirBadge + '<span class="media-thumb-name" title="' + escHtml(f.name) + '">' + escHtml(truncName) + '</span>' + tagsBadge + '</div></div>';
       }).join('');
     } catch(e) {
       document.getElementById('media-grid').innerHTML = '<div class="empty-state">No media files yet</div>';
@@ -3832,20 +5297,42 @@
     state.currentMediaFile = filename;
     var content = document.getElementById('media-preview-content');
     var encodedPath = filename.split('/').map(encodeURIComponent).join('/');
+    var meta = (mediaMetadataCache || {})[filename] || {};
+    var metaHtml = '<div class="media-meta-panel">' +
+      '<div class="form-group"><label>Tags</label><input type="text" id="media-meta-tags" value="' + escHtml((meta.tags || []).join(', ')) + '" placeholder="tag1, tag2"></div>' +
+      '<div class="form-group"><label>Description</label><input type="text" id="media-meta-desc" value="' + escHtml(meta.description || '') + '" placeholder="Optional description"></div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="App.saveMediaMeta()">Save Metadata</button>' +
+      '</div>';
     if (type === 'image') {
-      content.innerHTML = '<img src="/api/media/files/' + encodedPath + '" alt="' + escHtml(filename) + '" style="max-width:100%;max-height:70vh;display:block;margin:0 auto 12px;border-radius:6px">' +
-        '<p style="text-align:center;color:var(--text-muted);font-size:13px">' + escHtml(filename) + '</p>' +
-        '<button onclick="App.openMediaFolder()" style="display:block;margin:8px auto 0;padding:4px 12px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;font-size:12px">Open Location</button>';
+      content.innerHTML = '<img src="/api/raw/data/media/' + encodedPath + '" alt="' + escHtml(filename) + '" style="max-width:100%;max-height:60vh;display:block;margin:0 auto 12px;border-radius:6px">' +
+        '<p style="text-align:center;color:var(--text-muted);font-size:13px">' + escHtml(filename) + '</p>' + metaHtml;
     } else {
       var ext = filename.split('.').pop().toLowerCase();
       var icon = mediaTypeIcon(ext);
       content.innerHTML = '<div style="text-align:center;padding:32px">' +
         '<div style="font-size:64px;margin-bottom:16px">' + icon + '</div>' +
         '<p style="font-size:16px;font-weight:500;margin-bottom:8px">' + escHtml(filename) + '</p>' +
-        '<p style="color:var(--text-muted);font-size:13px">Type: ' + escHtml(ext.toUpperCase()) + '</p>' +
-        '<button onclick="App.openMediaFolder()" style="display:block;margin:12px auto 0;padding:4px 12px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;font-size:12px">Open Location</button></div>';
+        '<p style="color:var(--text-muted);font-size:13px">Type: ' + escHtml(ext.toUpperCase()) + '</p></div>' + metaHtml;
     }
     document.getElementById('media-preview-modal').classList.remove('hidden');
+  }
+
+  async function saveMediaMeta() {
+    if (!state.currentMediaFile) return;
+    var tagsStr = document.getElementById('media-meta-tags').value.trim();
+    var tags = tagsStr ? tagsStr.split(',').map(function(t) { return t.trim(); }).filter(Boolean) : [];
+    var description = document.getElementById('media-meta-desc').value.trim();
+    try {
+      await api.put('/api/media/metadata/' + encodeURIComponent(state.currentMediaFile), { tags: tags, description: description });
+      toast('Metadata saved');
+      if (mediaMetadataCache) {
+        if (!mediaMetadataCache[state.currentMediaFile]) mediaMetadataCache[state.currentMediaFile] = {};
+        mediaMetadataCache[state.currentMediaFile].tags = tags;
+        mediaMetadataCache[state.currentMediaFile].description = description;
+      }
+    } catch(e) {
+      toast('Failed to save metadata', 'error');
+    }
   }
 
   function closeMediaPreview() {
@@ -3860,6 +5347,104 @@
     } catch(e) {
       showToast('Could not open folder', 'error');
     }
+  }
+
+  // ── Quick-Add to KB / Media Modals ──────────────────
+  function openAddToKb(taskId, version, encodedFilename) {
+    var filename = decodeURIComponent(encodedFilename);
+    var task = state.currentTask || {};
+    var title = filename.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+    document.getElementById('add-kb-title').value = title;
+    document.getElementById('add-kb-category').value = 'reference';
+    document.getElementById('add-kb-tags').value = (task.tags || []).join(', ');
+    document.getElementById('add-kb-summary').value = '';
+    document.getElementById('add-kb-modal').dataset.taskId = taskId;
+    document.getElementById('add-kb-modal').dataset.version = version;
+    document.getElementById('add-kb-modal').dataset.filename = encodedFilename;
+    document.getElementById('add-kb-modal').classList.remove('hidden');
+  }
+
+  function closeAddToKb() {
+    document.getElementById('add-kb-modal').classList.add('hidden');
+  }
+
+  async function submitAddToKb() {
+    var modal = document.getElementById('add-kb-modal');
+    var taskId = modal.dataset.taskId;
+    var version = modal.dataset.version;
+    var filename = modal.dataset.filename;
+    var title = document.getElementById('add-kb-title').value.trim();
+    var category = document.getElementById('add-kb-category').value;
+    var tagsStr = document.getElementById('add-kb-tags').value.trim();
+    var tags = tagsStr ? tagsStr.split(',').map(function(t) { return t.trim(); }).filter(Boolean) : [];
+    var summary = document.getElementById('add-kb-summary').value.trim();
+    try {
+      await api.post('/api/tasks/' + taskId + '/versions/' + version + '/files/' + filename + '/add-to-kb', {
+        title: title, category: category, tags: tags, summary: summary
+      });
+      toast('Added to Knowledge Base');
+      closeAddToKb();
+    } catch(e) {
+      toast('Failed: ' + (e.body ? e.body.error : e.message), 'error');
+    }
+  }
+
+  async function openAddToMedia(taskId, version, encodedFilename, rawUrl) {
+    var filename = decodeURIComponent(encodedFilename);
+    document.getElementById('add-media-filename').value = filename;
+    document.getElementById('add-media-preview').innerHTML = rawUrl ? '<img src="' + rawUrl + '" style="max-width:200px;max-height:120px;border-radius:6px;border:1px solid var(--border)">' : '';
+    document.getElementById('add-media-modal').dataset.taskId = taskId;
+    document.getElementById('add-media-modal').dataset.version = version;
+    document.getElementById('add-media-modal').dataset.filename = encodedFilename;
+    // Load folder list
+    var folderSelect = document.getElementById('add-media-folder');
+    folderSelect.innerHTML = '<option value="social-images">social-images</option><option value="deliverables">deliverables</option>';
+    try {
+      var data = await api.get('/api/media/folders');
+      var existing = ['social-images', 'deliverables'];
+      (data.folders || []).forEach(function(f) {
+        if (existing.indexOf(f) < 0) {
+          folderSelect.innerHTML += '<option value="' + escHtml(f) + '">' + escHtml(f) + '</option>';
+          existing.push(f);
+        }
+      });
+    } catch(e) {}
+    document.getElementById('add-media-modal').classList.remove('hidden');
+  }
+
+  function closeAddToMedia() {
+    document.getElementById('add-media-modal').classList.add('hidden');
+  }
+
+  async function submitAddToMedia() {
+    var modal = document.getElementById('add-media-modal');
+    var taskId = modal.dataset.taskId;
+    var version = modal.dataset.version;
+    var filename = modal.dataset.filename;
+    var folder = document.getElementById('add-media-folder').value;
+    var newName = document.getElementById('add-media-filename').value.trim();
+    try {
+      await api.post('/api/tasks/' + taskId + '/versions/' + version + '/files/' + filename + '/copy-to-media', {
+        folder: folder, newName: newName || undefined
+      });
+      toast('Added to Media Library');
+      closeAddToMedia();
+    } catch(e) {
+      toast('Failed: ' + (e.body ? e.body.error : e.message), 'error');
+    }
+  }
+
+  // ── Media Library with Metadata ──────────────────────
+  var mediaMetadataCache = null;
+
+  async function loadMediaMetadata() {
+    try {
+      var data = await api.get('/api/media/metadata');
+      mediaMetadataCache = data.files || {};
+    } catch(e) {
+      mediaMetadataCache = {};
+    }
+    return mediaMetadataCache;
   }
 
   // ── Terminal / Command Center ──────────────────────
@@ -3936,6 +5521,7 @@
         return false;
       }
       if (ev.type === 'keydown' && ev.ctrlKey && ev.key === 'v') {
+        ev.preventDefault();
         navigator.clipboard.readText().then(function(text) {
           if (text && termWs && termWs.readyState === 1) {
             termWs.send(JSON.stringify({ type: 'input', data: text }));
@@ -4003,6 +5589,10 @@
         var data = JSON.parse(evt.data);
         if (data.type === 'terminal-output' && terminal) {
           terminal.write(data.data);
+          // Intercept RC output for Remote Control feature
+          if (rcState.listening || rcState.active) {
+            parseRcOutput(data.data);
+          }
         } else if (data.type === 'terminal-ready') {
           termSessionId = data.session;
           sessionStorage.setItem('termSessionId', termSessionId);
@@ -4053,17 +5643,191 @@
     }
   }
 
-  // ── Wizard (5 steps) ──────────────────────────────
-  function wizardNext() {
-    // Step 4 = orchestrator, prepare summary for step 5
-    if (state.wizardStep === 4) {
-      var orchName = document.getElementById('wiz-orch-name') ? document.getElementById('wiz-orch-name').value : 'Orchestrator';
-      var summary = '<strong>Profile:</strong> ' + escHtml(document.getElementById('wiz-name').value || 'Not set') + '<br>' +
-        '<strong>Team:</strong> ' + escHtml(document.getElementById('wiz-team-name').value || 'Not set') + '<br>' +
-        '<strong>Orchestrator:</strong> ' + escHtml(orchName || 'Orchestrator');
-      document.getElementById('wizard-summary').innerHTML = summary;
+  // ── Remote Control ────────────────────────────────
+  var rcState = { active: false, url: '', listening: false };
+
+  function openRemoteControl() {
+    document.getElementById('remote-control-modal').classList.remove('hidden');
+    if (rcState.active && rcState.url) {
+      updateRcModal('active');
     }
-    if (state.wizardStep < 5) {
+  }
+
+  function closeRemoteControl() {
+    document.getElementById('remote-control-modal').classList.add('hidden');
+  }
+
+  function startRemoteControl() {
+    if (!termWs || termWs.readyState !== 1) {
+      toast('Terminal not connected - open the Command Center first', 'warning');
+      return;
+    }
+    if (termSessionEnded) {
+      toast('CLI session ended - restart it first', 'warning');
+      return;
+    }
+    rcState.listening = true;
+    rcState.url = '';
+    updateRcModal('generating');
+    termWs.send(JSON.stringify({ type: 'input', data: '/rc\r' }));
+    rcState._timeout = setTimeout(function() {
+      if (rcState.listening && !rcState.active) {
+        rcState.listening = false;
+        updateRcModal('inactive');
+        toast('Remote control timed out - check the terminal output', 'warning');
+      }
+    }, 30000);
+  }
+
+  function stopRemoteControl() {
+    if (termWs && termWs.readyState === 1) {
+      termWs.send(JSON.stringify({ type: 'input', data: '\x03' }));
+    }
+    rcState.active = false;
+    rcState.url = '';
+    rcState.listening = false;
+    if (rcState._timeout) { clearTimeout(rcState._timeout); rcState._timeout = null; }
+    updateRcModal('inactive');
+    var btn = document.getElementById('btn-remote-control');
+    if (btn) btn.classList.remove('rc-active');
+  }
+
+  function parseRcOutput(rawData) {
+    var clean = rawData.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+    var urlMatch = clean.match(/https:\/\/[^\s\x00-\x1f]+/);
+    if (urlMatch && !rcState.active) {
+      var url = urlMatch[0].replace(/[\s\r\n]+$/, '');
+      if (url.indexOf('claude') !== -1 || url.indexOf('anthropic') !== -1 || url.indexOf('remote') !== -1) {
+        rcState.url = url;
+        rcState.active = true;
+        rcState.listening = false;
+        if (rcState._timeout) { clearTimeout(rcState._timeout); rcState._timeout = null; }
+        updateRcModal('active');
+        var btn = document.getElementById('btn-remote-control');
+        if (btn) btn.classList.add('rc-active');
+      }
+    }
+    var lower = clean.toLowerCase();
+    if (rcState.active && (lower.indexOf('remote control stopped') !== -1 || lower.indexOf('remote control disconnected') !== -1 || lower.indexOf('session ended') !== -1)) {
+      rcState.active = false;
+      rcState.url = '';
+      rcState.listening = false;
+      updateRcModal('inactive');
+      var btn2 = document.getElementById('btn-remote-control');
+      if (btn2) btn2.classList.remove('rc-active');
+    }
+  }
+
+  function updateRcModal(status) {
+    var dot = document.querySelector('#rc-status .rc-status-dot');
+    var text = document.getElementById('rc-status-text');
+    var urlArea = document.getElementById('rc-url-area');
+    var qrArea = document.getElementById('rc-qr-area');
+    var startBtn = document.getElementById('rc-start-btn');
+    var stopBtn = document.getElementById('rc-stop-btn');
+    var urlInput = document.getElementById('rc-url-input');
+    if (!dot || !text) return;
+    dot.className = 'rc-status-dot';
+    if (status === 'generating') {
+      dot.classList.add('rc-status-generating');
+      text.textContent = 'Starting...';
+      urlArea.classList.add('hidden');
+      qrArea.classList.add('hidden');
+      startBtn.classList.add('hidden');
+      stopBtn.classList.remove('hidden');
+    } else if (status === 'active') {
+      dot.classList.add('rc-status-active');
+      text.textContent = 'Connected';
+      urlInput.value = rcState.url;
+      urlArea.classList.remove('hidden');
+      qrArea.classList.remove('hidden');
+      startBtn.classList.add('hidden');
+      stopBtn.classList.remove('hidden');
+      renderRcQr(rcState.url);
+    } else {
+      dot.classList.add('rc-status-inactive');
+      text.textContent = 'Inactive';
+      urlArea.classList.add('hidden');
+      qrArea.classList.add('hidden');
+      startBtn.classList.remove('hidden');
+      stopBtn.classList.add('hidden');
+    }
+  }
+
+  function renderRcQr(url) {
+    var container = document.getElementById('rc-qr-code');
+    if (!container) return;
+    try {
+      if (typeof qrcode === 'function') {
+        var qr = qrcode(0, 'M');
+        qr.addData(url);
+        qr.make();
+        container.innerHTML = qr.createSvgTag(5, 0);
+      } else {
+        container.innerHTML = '<p style="font-size:11px;color:#666;word-break:break-all;">' + url + '</p>';
+      }
+    } catch(e) {
+      container.innerHTML = '<p style="font-size:11px;color:#666;">QR generation failed</p>';
+    }
+  }
+
+  function copyRcUrl() {
+    if (!rcState.url) return;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(rcState.url).then(function() {
+        toast('URL copied to clipboard');
+      }).catch(function() {
+        var input = document.getElementById('rc-url-input');
+        if (input) { input.select(); toast('Select and copy the URL'); }
+      });
+    } else {
+      var input = document.getElementById('rc-url-input');
+      if (input) { input.select(); toast('Select and copy the URL'); }
+    }
+  }
+
+  // ── Wizard (6 steps) ──────────────────────────────
+  var wizardTeamType = 'custom';
+  var wizardCreatedAgents = [];
+
+  var TEAM_TEMPLATES = {
+    coding: [
+      { name: 'Dev', role: 'Full-Stack Developer', mission: 'Build, enhance, and maintain software across the entire stack', description: 'Writes clean, efficient code across frontend and backend', personality: { traits: ['pragmatic', 'detail-oriented', 'proactive'], tone: 'direct and technical', style: 'concise, code-first' }, capabilities: ['Node.js/Express', 'HTML/CSS/JS', 'REST API design', 'Git workflow'] },
+      { name: 'Scout', role: 'Researcher & Analyst', mission: 'Research topics, analyze options, and provide actionable insights', description: 'Investigates questions thoroughly and delivers clear findings', personality: { traits: ['thorough', 'analytical', 'curious'], tone: 'clear and informative', style: 'structured, evidence-based' }, capabilities: ['Web research', 'Competitive analysis', 'Technical evaluation', 'Report writing'] },
+      { name: 'Shipper', role: 'Release & GitHub Manager', mission: 'Handle releases, deployments, and version control', description: 'Manages the shipping pipeline from commit to release', personality: { traits: ['organized', 'reliable', 'systematic'], tone: 'professional', style: 'process-oriented' }, capabilities: ['Git operations', 'GitHub releases', 'Version management', 'CI/CD'] },
+      { name: 'Pen', role: 'Documentation Writer', mission: 'Create clear, useful documentation and content', description: 'Writes docs, README files, and technical content', personality: { traits: ['clear', 'precise', 'helpful'], tone: 'friendly and professional', style: 'concise, well-structured' }, capabilities: ['Technical writing', 'API documentation', 'User guides', 'Content editing'] }
+    ],
+    marketing: [
+      { name: 'Pen', role: 'Content Writer', mission: 'Create engaging content that drives audience growth', description: 'Writes compelling copy, blog posts, and social content', personality: { traits: ['creative', 'persuasive', 'adaptable'], tone: 'engaging and natural', style: 'story-driven' }, capabilities: ['Blog writing', 'Social media copy', 'Email campaigns', 'SEO content'] },
+      { name: 'Pixel', role: 'Designer', mission: 'Create visual assets for brand and marketing', description: 'Designs graphics, social images, and brand materials', personality: { traits: ['creative', 'detail-oriented', 'trend-aware'], tone: 'visual-first', style: 'clean and modern' }, capabilities: ['Social media graphics', 'Brand design', 'Image editing', 'Visual storytelling'] },
+      { name: 'Buzz', role: 'Growth Manager', mission: 'Drive audience growth and community engagement', description: 'Manages social presence and community interactions', personality: { traits: ['energetic', 'data-driven', 'social'], tone: 'enthusiastic and authentic', style: 'community-focused' }, capabilities: ['Social media management', 'Community building', 'Growth strategy', 'Analytics'] },
+      { name: 'Scout', role: 'Market Researcher', mission: 'Research markets, competitors, and audience trends', description: 'Analyzes market landscape and identifies opportunities', personality: { traits: ['analytical', 'thorough', 'strategic'], tone: 'insightful', style: 'data-backed' }, capabilities: ['Market research', 'Competitor analysis', 'Trend identification', 'Audience insights'] }
+    ],
+    sales: [
+      { name: 'Scout', role: 'Lead Researcher', mission: 'Find and qualify potential leads and prospects', description: 'Researches companies and contacts for outreach', personality: { traits: ['persistent', 'detail-oriented', 'strategic'], tone: 'professional', style: 'thorough' }, capabilities: ['Lead research', 'Company profiling', 'Contact finding', 'Qualification criteria'] },
+      { name: 'Pen', role: 'Outreach Writer', mission: 'Write compelling outreach messages and proposals', description: 'Crafts personalized sales messages that convert', personality: { traits: ['persuasive', 'empathetic', 'concise'], tone: 'professional and warm', style: 'personalized' }, capabilities: ['Cold outreach', 'Email sequences', 'Proposals', 'Follow-up messages'] },
+      { name: 'Buzz', role: 'Engagement Manager', mission: 'Build and maintain prospect relationships', description: 'Manages ongoing communication and relationship nurturing', personality: { traits: ['personable', 'responsive', 'organized'], tone: 'friendly and professional', style: 'relationship-focused' }, capabilities: ['CRM management', 'Follow-up automation', 'Relationship tracking', 'Pipeline management'] },
+      { name: 'Dev', role: 'CRM & Automation', mission: 'Build and maintain sales automation tools', description: 'Creates automations and integrations for the sales pipeline', personality: { traits: ['efficient', 'systematic', 'practical'], tone: 'technical', style: 'solution-oriented' }, capabilities: ['Workflow automation', 'Data integration', 'Report generation', 'Tool setup'] }
+    ],
+    research: [
+      { name: 'Scout', role: 'Primary Researcher', mission: 'Conduct deep research and analysis on assigned topics', description: 'Leads research projects with thorough investigation', personality: { traits: ['analytical', 'meticulous', 'curious'], tone: 'academic and precise', style: 'evidence-based' }, capabilities: ['Deep research', 'Source evaluation', 'Data collection', 'Literature review'] },
+      { name: 'Pen', role: 'Report Writer', mission: 'Transform research findings into clear, actionable reports', description: 'Writes well-structured research reports and summaries', personality: { traits: ['clear', 'organized', 'thorough'], tone: 'professional and precise', style: 'structured, readable' }, capabilities: ['Report writing', 'Data visualization', 'Executive summaries', 'Presentation creation'] },
+      { name: 'Dev', role: 'Data Analyst', mission: 'Process, analyze, and visualize data for research projects', description: 'Handles data processing and quantitative analysis', personality: { traits: ['methodical', 'accurate', 'efficient'], tone: 'technical', style: 'data-driven' }, capabilities: ['Data processing', 'Statistical analysis', 'Visualization', 'Scripting'] }
+    ],
+    operations: [
+      { name: 'Dev', role: 'Automation Engineer', mission: 'Build and maintain workflow automations', description: 'Creates automated processes to improve efficiency', personality: { traits: ['systematic', 'efficient', 'reliable'], tone: 'technical and clear', style: 'process-oriented' }, capabilities: ['Workflow automation', 'Script development', 'Integration building', 'System monitoring'] },
+      { name: 'Scout', role: 'Process Analyst', mission: 'Analyze and optimize operational processes', description: 'Identifies bottlenecks and recommends improvements', personality: { traits: ['analytical', 'observant', 'pragmatic'], tone: 'clear and actionable', style: 'structured' }, capabilities: ['Process mapping', 'Bottleneck analysis', 'Optimization', 'Documentation'] },
+      { name: 'Shipper', role: 'Deployment Manager', mission: 'Handle deployments, releases, and system operations', description: 'Manages the operational infrastructure and releases', personality: { traits: ['reliable', 'organized', 'cautious'], tone: 'professional', style: 'checklist-driven' }, capabilities: ['Deployment management', 'Release coordination', 'Monitoring', 'Incident response'] }
+    ],
+    custom: []
+  };
+
+  function wizardNext() {
+    // When moving to step 6, trigger team creation
+    if (state.wizardStep === 5) {
+      wizardCreateTeam();
+    }
+    if (state.wizardStep < 6) {
       state.wizardStep++;
       updateWizardStep();
     }
@@ -4080,51 +5844,259 @@
     document.querySelectorAll('.wizard-step').forEach(function(s) {
       s.classList.toggle('active', parseInt(s.dataset.step) === state.wizardStep);
     });
-    document.getElementById('wizard-progress-bar').style.width = Math.round(state.wizardStep / 5 * 100) + '%';
+    document.getElementById('wizard-progress-bar').style.width = Math.round(state.wizardStep / 6 * 100) + '%';
+  }
+
+  function wizardSelectType(type) {
+    wizardTeamType = type;
+    document.querySelectorAll('.wiz-type-card').forEach(function(c) {
+      c.classList.toggle('selected', c.dataset.type === type);
+    });
+  }
+
+  async function wizardCheckClaude() {
+    var btn = document.getElementById('wiz-claude-check-btn');
+    var status = document.getElementById('wiz-claude-status');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    status.className = 'wiz-claude-status';
+    status.textContent = '';
+    try {
+      var result = await api.post('/api/setup/claude-check', {});
+      if (result.found) {
+        status.className = 'wiz-claude-status success';
+        status.innerHTML = '&#10003; Claude CLI found at ' + escHtml(result.path);
+        document.getElementById('wiz-claude-pro-card').style.borderColor = 'var(--green)';
+      } else {
+        status.className = 'wiz-claude-status error';
+        status.innerHTML = 'Claude CLI not found. <a href="https://claude.ai/code" target="_blank" style="color:var(--yellow)">Install Claude Code</a>, then try again.';
+      }
+    } catch(e) {
+      status.className = 'wiz-claude-status error';
+      status.textContent = 'Check failed: ' + e.message;
+    }
+    btn.disabled = false;
+    btn.textContent = 'Connect Pro/Max';
+  }
+
+  async function wizardSaveApiKey() {
+    var keyInput = document.getElementById('wiz-api-key');
+    var status = document.getElementById('wiz-api-status');
+    var key = keyInput.value.trim();
+    if (!key) {
+      status.className = 'wiz-claude-status error';
+      status.textContent = 'Please enter an API key.';
+      return;
+    }
+    status.className = 'wiz-claude-status';
+    status.textContent = 'Saving...';
+    try {
+      // Save connection type to system.json
+      var sys = await api.get('/api/system/status');
+      sys.claudeConnection = 'api';
+      await api.post('/api/write-file', {
+        path: 'config/system.json',
+        content: JSON.stringify(sys, null, 2)
+      });
+      status.className = 'wiz-claude-status success';
+      status.innerHTML = '&#10003; API key saved.';
+      document.getElementById('wiz-claude-api-card').style.borderColor = 'var(--green)';
+    } catch(e) {
+      status.className = 'wiz-claude-status error';
+      status.textContent = 'Save failed: ' + e.message;
+    }
+  }
+
+  async function wizardCreateTeam() {
+    var teamList = document.getElementById('wiz-team-list');
+    var creating = document.getElementById('wiz-team-creating');
+    var finishBtn = document.getElementById('wiz-finish-btn');
+    var titleEl = document.getElementById('wiz-team-title');
+    var subtitleEl = document.getElementById('wiz-team-subtitle');
+    teamList.innerHTML = '';
+    wizardCreatedAgents = [];
+
+    // Save profile first
+    var nameVal = (document.getElementById('wiz-name') || {}).value || '';
+    var roleVal = (document.getElementById('wiz-role') || {}).value || '';
+    var goalsVal = (document.getElementById('wiz-goals') || {}).value || '';
+    if (nameVal.trim() || roleVal.trim() || goalsVal.trim()) {
+      try {
+        await api.put('/api/profile', {
+          name: nameVal.trim(),
+          role: roleVal.trim(),
+          goals: goalsVal.trim()
+        });
+      } catch(e) { console.error('Profile save error:', e); }
+    }
+
+    // Save orchestrator name
+    var orchName = (document.getElementById('wiz-orch-name') || {}).value || 'Hero';
+    if (orchName.trim()) {
+      try {
+        await api.put('/api/agents/orchestrator', { name: orchName.trim() });
+      } catch(e) { console.error('Orchestrator rename error:', e); }
+    }
+
+    // Save system config with team type and connection
+    try {
+      var sys = await api.get('/api/system/status');
+      sys.teamType = wizardTeamType;
+      sys.disclaimerAcceptedAt = sys.disclaimerAcceptedAt || new Date().toISOString();
+      await api.post('/api/write-file', {
+        path: 'config/system.json',
+        content: JSON.stringify(sys, null, 2)
+      });
+    } catch(e) { console.error('System config save error:', e); }
+
+    var template = TEAM_TEMPLATES[wizardTeamType] || [];
+
+    if (template.length === 0) {
+      // Custom - no agents to create
+      titleEl.textContent = 'Your team is ready!';
+      subtitleEl.textContent = 'You chose a custom team. Add agents from the dashboard anytime.';
+      // Show just the orchestrator
+      var orchItem = wizardRenderTeamItem({ id: 'orchestrator', name: orchName.trim() || 'Hero', role: 'Team Orchestrator' }, true);
+      teamList.appendChild(orchItem);
+      return;
+    }
+
+    // Show creating state
+    creating.style.display = 'flex';
+    finishBtn.disabled = true;
+
+    // Initialize system first so we can create agents
+    try {
+      await api.post('/api/system/initialize', {});
+    } catch(e) { console.error('Init error:', e); }
+
+    // Create agents
+    for (var i = 0; i < template.length; i++) {
+      try {
+        var agent = await api.post('/api/agents', template[i]);
+        wizardCreatedAgents.push(agent);
+      } catch(e) {
+        console.error('Failed to create agent:', template[i].name, e);
+      }
+    }
+
+    creating.style.display = 'none';
+    finishBtn.disabled = false;
+
+    // Render orchestrator first
+    var orchEl = wizardRenderTeamItem({ id: 'orchestrator', name: orchName.trim() || 'Hero', role: 'Team Orchestrator' }, true);
+    teamList.appendChild(orchEl);
+
+    // Render created agents
+    for (var j = 0; j < wizardCreatedAgents.length; j++) {
+      var el = wizardRenderTeamItem(wizardCreatedAgents[j], false);
+      teamList.appendChild(el);
+    }
+
+    titleEl.textContent = 'Your team is ready!';
+    subtitleEl.textContent = 'We created ' + wizardCreatedAgents.length + ' agents for your ' + wizardTeamType + ' team:';
+  }
+
+  function wizardRenderTeamItem(agent, isOrch) {
+    var div = document.createElement('div');
+    div.className = 'wiz-team-item';
+    div.dataset.agentId = agent.id;
+
+    var icon = isOrch ? '&#9733;' : '&#9679;';
+    var nameClass = isOrch ? 'wiz-team-item-name orch' : 'wiz-team-item-name';
+
+    var html = '<div class="wiz-team-item-icon">' + icon + '</div>' +
+      '<div class="wiz-team-item-info">' +
+        '<div class="' + nameClass + '" id="wiz-agent-name-' + agent.id + '">' + escHtml(agent.name) + '</div>' +
+        '<div class="wiz-team-item-role">' + escHtml(agent.role) + '</div>' +
+      '</div>';
+
+    if (!isOrch) {
+      html += '<div class="wiz-team-item-actions">' +
+        '<button class="btn btn-sm btn-secondary" onclick="App.wizardRenameAgent(\'' + agent.id + '\')">Rename</button>' +
+        '<button class="btn btn-sm btn-cancel" onclick="App.wizardRemoveAgent(\'' + agent.id + '\')">Remove</button>' +
+      '</div>';
+    }
+
+    div.innerHTML = html;
+    return div;
+  }
+
+  async function wizardRenameAgent(agentId) {
+    var nameEl = document.getElementById('wiz-agent-name-' + agentId);
+    if (!nameEl) return;
+    var currentName = nameEl.textContent;
+    nameEl.innerHTML = '<input type="text" class="wiz-team-rename-input" value="' + escHtml(currentName) + '" id="wiz-rename-input-' + agentId + '" onkeydown="if(event.key===\'Enter\')App.wizardConfirmRename(\'' + agentId + '\')" autofocus>';
+    var input = document.getElementById('wiz-rename-input-' + agentId);
+    if (input) { input.focus(); input.select(); }
+  }
+
+  async function wizardConfirmRename(agentId) {
+    var input = document.getElementById('wiz-rename-input-' + agentId);
+    if (!input) return;
+    var newName = input.value.trim();
+    if (!newName) return;
+    try {
+      await api.put('/api/agents/' + agentId, { name: newName });
+      var nameEl = document.getElementById('wiz-agent-name-' + agentId);
+      if (nameEl) nameEl.textContent = newName;
+      // Update local cache
+      for (var i = 0; i < wizardCreatedAgents.length; i++) {
+        if (wizardCreatedAgents[i].id === agentId) wizardCreatedAgents[i].name = newName;
+      }
+    } catch(e) {
+      toast('Rename failed: ' + e.message, 'error');
+    }
+  }
+
+  async function wizardRemoveAgent(agentId) {
+    try {
+      await api.del('/api/agents/' + agentId);
+      var item = document.querySelector('.wiz-team-item[data-agent-id="' + agentId + '"]');
+      if (item) item.remove();
+      wizardCreatedAgents = wizardCreatedAgents.filter(function(a) { return a.id !== agentId; });
+      var subtitleEl = document.getElementById('wiz-team-subtitle');
+      if (subtitleEl && wizardCreatedAgents.length > 0) {
+        subtitleEl.textContent = wizardCreatedAgents.length + ' agent' + (wizardCreatedAgents.length !== 1 ? 's' : '') + ' in your team:';
+      }
+    } catch(e) {
+      toast('Remove failed: ' + e.message, 'error');
+    }
   }
 
   async function wizardFinish() {
     try {
-      var profile = {
-        name: document.getElementById('wiz-name').value.trim(),
-        role: document.getElementById('wiz-role').value.trim(),
-        expertise: document.getElementById('wiz-expertise').value.trim(),
-        goals: document.getElementById('wiz-goals').value.trim(),
-        targetAudience: document.getElementById('wiz-audience').value.trim(),
-        brandVoice: document.getElementById('wiz-voice').value.trim(),
-      };
-      await api.put('/api/profile', profile);
-
-      var teamName = document.getElementById('wiz-team-name').value.trim() || 'My Team';
-      var teamDesc = document.getElementById('wiz-team-desc').value.trim();
-      await api.post('/api/write-file', {
-        path: 'config/system.json',
-        content: JSON.stringify({ initialized: true, teamName: teamName, teamDescription: teamDesc, version: '1.0.0' }, null, 2)
-      });
-
-      // Update orchestrator with custom name and personality from wizard
-      var orchName = document.getElementById('wiz-orch-name') ? document.getElementById('wiz-orch-name').value.trim() : '';
-      var orchTraits = document.getElementById('wiz-orch-traits') ? document.getElementById('wiz-orch-traits').value.trim() : '';
-      var orchTone = document.getElementById('wiz-orch-tone') ? document.getElementById('wiz-orch-tone').value.trim() : '';
-      if (orchName) {
-        await api.put('/api/agents/orchestrator', {
-          name: orchName,
-          personality: {
-            traits: orchTraits.split(',').map(function(s) { return s.trim(); }).filter(Boolean),
-            tone: orchTone,
-            style: 'clear, structured, action-oriented',
-          },
-        });
-      }
-
+      // Ensure system is initialized
       await api.post('/api/system/initialize', {});
+
+      // Read current system config and set teamName
+      var sys = await api.get('/api/system/status');
+      var teamName = sys.teamName || 'My Team';
       updateSidebarHeader(teamName);
       document.getElementById('wizard-overlay').classList.add('hidden');
       await loadSidebarAgents();
       navigate('chat');
-      toast('Team setup complete! Use the Command Center to build your team.');
+      toast('Team setup complete! Talk to your sidekick in the Command Center.');
     } catch(e) {
       toast('Setup failed: ' + e.message, 'error');
+      console.error(e);
+    }
+  }
+
+  async function wizardSkip() {
+    try {
+      await api.post('/api/write-file', {
+        path: 'config/system.json',
+        content: JSON.stringify({ initialized: true, teamName: 'My Team', teamDescription: '', version: '1.0.0', disclaimerAcceptedAt: new Date().toISOString() }, null, 2)
+      });
+      await api.post('/api/system/initialize', {});
+      updateSidebarHeader('My Team');
+      document.getElementById('wizard-overlay').classList.add('hidden');
+      await loadSidebarAgents();
+      navigate('chat');
+      toast('Setup skipped - you can configure your profile in Settings anytime.');
+    } catch(e) {
+      toast('Skip failed: ' + e.message, 'error');
       console.error(e);
     }
   }
@@ -4420,6 +6392,7 @@
     var tasks = context === 'dashboard' ? state.cachedDashboardTasks : state.cachedAgentTasks;
     var tagCounts = {};
     (tasks || []).forEach(function(t) {
+      if (t.supersededBy) return; // Exclude superseded tasks from tag counts
       (t.tags || []).forEach(function(tag) {
         tagCounts[tag] = (tagCounts[tag] || 0) + 1;
       });
@@ -4561,9 +6534,149 @@
     renderFilteredTasks(context);
   }
 
+  // ── Speech-to-CLI (left mic button) ────────────────
+  var micRecognition = null;
+  var micIsRecording = false;
+
+  function toggleMicrophoneSpeech() {
+    var btn = document.getElementById('mic-terminal-btn');
+    if (!btn) return;
+
+    if (micIsRecording) {
+      // Stop recording
+      if (micRecognition) micRecognition.stop();
+      return;
+    }
+
+    // Start recording
+    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      toast('Speech recognition not supported in this browser', 'error');
+      return;
+    }
+
+    var recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || 'en-US';
+
+    var finalTranscript = '';
+    var svgHtml = btn.querySelector('svg').outerHTML;
+
+    recognition.onstart = function() {
+      micIsRecording = true;
+      finalTranscript = '';
+      btn.classList.add('recording');
+      btn.title = 'Click to stop recording';
+    };
+
+    recognition.onresult = function(event) {
+      var interim = '';
+      for (var i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+      // Update button text to show live transcript preview
+      var previewText = (finalTranscript + interim).trim();
+      if (previewText) {
+        var short = previewText.length > 30 ? '...' + previewText.slice(-30) : previewText;
+        btn.innerHTML = svgHtml + ' ' + short;
+      }
+    };
+
+    recognition.onend = function() {
+      micIsRecording = false;
+      btn.classList.remove('recording');
+      btn.title = 'Toggle microphone';
+      btn.innerHTML = svgHtml + ' Mic';
+      micRecognition = null;
+
+      // Send final transcript to terminal
+      var text = finalTranscript.trim();
+      if (text && termWs && termWs.readyState === 1) {
+        termWs.send(JSON.stringify({ type: 'input', data: text }));
+      }
+    };
+
+    recognition.onerror = function(event) {
+      micIsRecording = false;
+      btn.classList.remove('recording');
+      btn.title = 'Toggle microphone';
+      btn.innerHTML = svgHtml + ' Mic';
+      micRecognition = null;
+      if (event.error !== 'aborted' && event.error !== 'no-speech') {
+        toast('Voice input error: ' + event.error, 'error');
+      }
+    };
+
+    micRecognition = recognition;
+    recognition.start();
+  }
+
+  // ── Global Autopilot ─────────────────────────────────
+  async function loadGlobalAutopilot() {
+    try {
+      var data = await api.get('/api/config/autopilot');
+      state.globalAutopilot = data.enabled === true;
+      renderAutopilotButton();
+    } catch(e) {
+      console.error('Failed to load autopilot state:', e);
+    }
+  }
+
+  function renderAutopilotButton() {
+    var btn = document.getElementById('btn-global-autopilot');
+    var label = document.getElementById('autopilot-status-label');
+    if (!btn || !label) return;
+    if (state.globalAutopilot) {
+      btn.classList.add('active');
+      label.textContent = 'ON';
+    } else {
+      btn.classList.remove('active');
+      label.textContent = 'OFF';
+    }
+  }
+
+  function toggleGlobalAutopilot() {
+    var modal = document.getElementById('autopilot-confirm-modal');
+    var title = document.getElementById('autopilot-confirm-title');
+    if (modal) {
+      title.textContent = state.globalAutopilot ? 'Turn Off Autopilot' : 'Turn On Autopilot';
+      modal.classList.remove('hidden');
+    }
+  }
+
+  function cancelAutopilotConfirm() {
+    var modal = document.getElementById('autopilot-confirm-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  async function confirmGlobalAutopilot() {
+    var newVal = !state.globalAutopilot;
+    try {
+      await api.put('/api/config/autopilot', { enabled: newVal });
+      state.globalAutopilot = newVal;
+      renderAutopilotButton();
+    } catch(e) {
+      console.error('Failed to toggle autopilot:', e);
+    }
+    cancelAutopilotConfirm();
+  }
+
   // ── Init ───────────────────────────────────────────
   async function init() {
     connectWebSocket();
+    loadNotificationsFromServer();
+
+    // Hide mic button if Web Speech API is not supported
+    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var micBtn = document.getElementById('mic-terminal-btn');
+    if (!SpeechRecognition && micBtn) {
+      micBtn.style.display = 'none';
+    }
 
     // Prevent hints-bar buttons from stealing terminal focus
     var hintsBar = document.querySelector('.terminal-hints-bar');
@@ -4581,6 +6694,7 @@
       } else {
         updateSidebarHeader(sys.teamName);
         await loadSidebarAgents();
+        loadGlobalAutopilot();
         // Deep link: navigate from hash or default to chat
         if (location.hash && location.hash !== '#') {
           _navigateFromHash();
@@ -4591,6 +6705,24 @@
         silentUpdateCheck();
         // Check post-upgrade banner and upgrading lock
         checkPostUpgradeBanner();
+        // Auto-trigger health check if pending from a recent upgrade
+        if (localStorage.getItem('pendingHealthCheck')) {
+          localStorage.removeItem('pendingHealthCheck');
+          // Navigate to command center first (initializes terminal)
+          navigate('command-center');
+          // Wait for terminal WebSocket to connect, then send health check
+          var hcRetries = 0;
+          var hcInterval = setInterval(function() {
+            hcRetries++;
+            if (termWs && termWs.readyState === 1) {
+              clearInterval(hcInterval);
+              runHealthCheck();
+            } else if (hcRetries > 15) {
+              clearInterval(hcInterval);
+              toast('Terminal not ready - run health check manually', 'warning');
+            }
+          }, 1000);
+        }
         // Re-check every 30 minutes
         setInterval(silentUpdateCheck, 30 * 60 * 1000);
       }
@@ -4610,44 +6742,86 @@
       renderSkills(data.skills || []);
     } catch(e) {
       console.error('Failed to load skills:', e);
-      document.getElementById('skills-grid').innerHTML = '<div class="empty-state">Failed to load skills</div>';
+      var errGrid = document.getElementById('skills-grid-curated') || document.getElementById('skills-grid');
+      if (errGrid) errGrid.innerHTML = '<div class="empty-state">Failed to load skills</div>';
     }
   }
 
+  function renderSkillCard(s) {
+    var installing = !!skillsInstalling[s.id];
+    var statusText = installing ? 'Installing...' : (s.enabled ? 'Enabled' : 'Not installed');
+    var statusClass = installing ? 'installing' : (s.enabled ? 'enabled' : '');
+    var cardClass = s.enabled ? 'skill-card enabled' : 'skill-card';
+    var isUser = !!s.userInstalled;
+    var sourceLabel = s.source === 'registry' ? 'Registry' : s.source === 'npm' ? 'npm' : (isUser ? 'User' : 'Built-in');
+    var sourceClass = isUser ? 'user' : 'builtin';
+    if (s.source === 'registry') sourceClass = 'registry';
+    if (s.source === 'npm') sourceClass = 'npm';
+    var sourceBadge = '<span class="skill-source-badge ' + sourceClass + '">' + sourceLabel + '</span>';
+    var uninstallBtn = isUser ? ' <button class="skill-uninstall-btn" onclick="event.stopPropagation();App.uninstallUserSkill(' + q + s.id + q + ')">Uninstall</button>' : '';
+    var installDate = isUser && s.installedAt ? '<span class="skill-install-date">Installed ' + timeAgo(s.installedAt) + '</span>' : '';
+    return '<div class="' + cardClass + '" data-skill-id="' + s.id + '">' +
+      '<div class="skill-card-header">' +
+        '<div class="skill-card-info">' +
+          '<span class="skill-icon">' + (s.icon || '') + '</span>' +
+          '<div><div class="skill-card-title">' + escHtml(s.name) + '</div></div>' +
+        '</div>' +
+        '<label class="toggle-switch">' +
+          '<input type="checkbox" ' + (s.enabled ? 'checked' : '') + ' ' + (installing ? 'disabled' : '') +
+          ' onchange="App.toggleSkill(' + q + s.id + q + ', this.checked)">' +
+          '<span class="toggle-slider"></span>' +
+        '</label>' +
+      '</div>' +
+      '<div class="skill-card-desc">' + escHtml(s.description) + '</div>' +
+      (s.missingDeps && s.missingDeps.length && !s.enabled ?
+        '<div class="skill-deps-warning">Requires: ' + s.missingDeps.join(', ') + ' (will auto-install)</div>' : '') +
+      (s.settings && s.settings.length && s.enabled ? renderSkillSettings(s) : '') +
+      (s.id === 'github' && s.enabled ? '<div class="github-status-panel" id="github-status-panel"><span class="text-muted">Checking connection...</span></div>' : '') +
+      '<div class="skill-card-footer">' +
+        '<span class="skill-type-badge skill-type-' + s.type + '">' + s.type + '</span>' +
+        sourceBadge +
+        installDate +
+        '<span class="skill-status ' + statusClass + '">' + statusText + '</span>' +
+        uninstallBtn +
+      '</div>' +
+    '</div>';
+  }
+
   function renderSkills(skills) {
-    var grid = document.getElementById('skills-grid');
-    if (!skills.length) {
-      grid.innerHTML = '<div class="empty-state">No skills available</div>';
+    var curatedGrid = document.getElementById('skills-grid-curated');
+    var userGrid = document.getElementById('skills-grid-user');
+    var userSection = document.getElementById('skills-section-user');
+
+    // Fallback for old HTML structure
+    if (!curatedGrid) {
+      var grid = document.getElementById('skills-grid');
+      if (grid) grid.innerHTML = skills.length ? skills.map(renderSkillCard).join('') : '<div class="empty-state">No skills available</div>';
       return;
     }
-    grid.innerHTML = skills.map(function(s) {
-      var installing = !!skillsInstalling[s.id];
-      var statusText = installing ? 'Installing...' : (s.enabled ? 'Enabled' : 'Not installed');
-      var statusClass = installing ? 'installing' : (s.enabled ? 'enabled' : '');
-      var cardClass = s.enabled ? 'skill-card enabled' : 'skill-card';
-      return '<div class="' + cardClass + '" data-skill-id="' + s.id + '">' +
-        '<div class="skill-card-header">' +
-          '<div class="skill-card-info">' +
-            '<span class="skill-icon">' + (s.icon || '') + '</span>' +
-            '<div><div class="skill-card-title">' + escHtml(s.name) + '</div></div>' +
-          '</div>' +
-          '<label class="toggle-switch">' +
-            '<input type="checkbox" ' + (s.enabled ? 'checked' : '') + ' ' + (installing ? 'disabled' : '') +
-            ' onchange="App.toggleSkill(' + q + s.id + q + ', this.checked)">' +
-            '<span class="toggle-slider"></span>' +
-          '</label>' +
-        '</div>' +
-        '<div class="skill-card-desc">' + escHtml(s.description) + '</div>' +
-        (s.missingDeps && s.missingDeps.length && !s.enabled ?
-          '<div class="skill-deps-warning">Requires: ' + s.missingDeps.join(', ') + ' (will auto-install)</div>' : '') +
-        (s.settings && s.settings.length && s.enabled ? renderSkillSettings(s) : '') +
-        (s.id === 'github' && s.enabled ? '<div class="github-status-panel" id="github-status-panel"><span class="text-muted">Checking connection...</span></div>' : '') +
-        '<div class="skill-card-footer">' +
-          '<span class="skill-type-badge skill-type-' + s.type + '">' + s.type + '</span>' +
-          '<span class="skill-status ' + statusClass + '">' + statusText + '</span>' +
-        '</div>' +
-      '</div>';
-    }).join('');
+
+    // Track loaded skill IDs for cross-referencing in Discover tab
+    loadedSkillIds = new Set();
+    skills.forEach(function(s) { loadedSkillIds.add(s.id); if (s.sourceId) loadedSkillIds.add(s.sourceId); if (s.npmPackage) loadedSkillIds.add(s.npmPackage); });
+
+    var curated = skills.filter(function(s) { return !s.userInstalled; });
+    var userSkills = skills.filter(function(s) { return !!s.userInstalled; });
+
+    // Render curated skills
+    if (curated.length) {
+      curatedGrid.innerHTML = curated.map(renderSkillCard).join('');
+    } else {
+      curatedGrid.innerHTML = '<div class="empty-state">No curated skills available</div>';
+    }
+
+    // Render user-installed skills
+    if (userSkills.length) {
+      userGrid.innerHTML = userSkills.map(renderSkillCard).join('');
+      userSection.style.display = '';
+    } else {
+      userGrid.innerHTML = '<div class="empty-state">No custom skills installed. Use the Discover tab to find and install MCP skills.</div>';
+      userSection.style.display = '';
+    }
+
     // Load GitHub status if enabled
     var ghCard = document.getElementById('github-status-panel');
     if (ghCard) loadGitHubStatus();
@@ -4738,6 +6912,178 @@
     }
   }
 
+  // ── Skills Discovery ─────────────────────────────────
+  var skillsSearchCursor = null;
+  var skillsSearchQuery = '';
+  var skillsSearchInstalling = {};
+  var loadedSkillIds = new Set();
+
+  function switchSkillsTab(tab) {
+    var tabs = document.querySelectorAll('#skills-tabs .tab-btn');
+    tabs.forEach(function(t, i) {
+      if ((tab === 'installed' && i === 0) || (tab === 'discover' && i === 1)) {
+        t.classList.add('active');
+      } else {
+        t.classList.remove('active');
+      }
+    });
+    var installed = document.getElementById('skills-tab-installed');
+    var discover = document.getElementById('skills-tab-discover');
+    if (installed) installed.classList.toggle('active', tab === 'installed');
+    if (discover) discover.classList.toggle('active', tab === 'discover');
+    if (tab === 'installed') loadSkills();
+  }
+
+  async function searchDiscoverSkills() {
+    var input = document.getElementById('skills-search-input');
+    if (!input) return;
+    var query = input.value.trim();
+    if (!query) return;
+    skillsSearchQuery = query;
+    skillsSearchCursor = null;
+    var results = document.getElementById('skills-search-results');
+    var loading = document.getElementById('skills-search-loading');
+    var more = document.getElementById('skills-search-more');
+    if (results) results.innerHTML = '';
+    if (loading) loading.style.display = 'block';
+    if (more) more.style.display = 'none';
+    try {
+      var data = await api.get('/api/skills/search?q=' + encodeURIComponent(query));
+      if (loading) loading.style.display = 'none';
+      renderSearchResults(data.results || [], false);
+      skillsSearchCursor = data.nextCursor || null;
+      if (more) more.style.display = skillsSearchCursor ? 'block' : 'none';
+    } catch(e) {
+      if (loading) loading.style.display = 'none';
+      if (results) results.innerHTML = '<div class="empty-state">Search failed: ' + escHtml(e.message || 'Unknown error') + '</div>';
+    }
+  }
+
+  async function loadMoreSkills() {
+    if (!skillsSearchCursor || !skillsSearchQuery) return;
+    var loading = document.getElementById('skills-search-loading');
+    var more = document.getElementById('skills-search-more');
+    if (loading) loading.style.display = 'block';
+    if (more) more.style.display = 'none';
+    try {
+      var data = await api.get('/api/skills/search?q=' + encodeURIComponent(skillsSearchQuery) + '&cursor=' + encodeURIComponent(skillsSearchCursor));
+      if (loading) loading.style.display = 'none';
+      renderSearchResults(data.results || [], true);
+      skillsSearchCursor = data.nextCursor || null;
+      if (more) more.style.display = skillsSearchCursor ? 'block' : 'none';
+    } catch(e) {
+      if (loading) loading.style.display = 'none';
+      toast('Failed to load more results', 'error');
+    }
+  }
+
+  function renderSearchResults(results, append) {
+    var grid = document.getElementById('skills-search-results');
+    if (!grid) return;
+    if (!results.length && !append) {
+      grid.innerHTML = '<div class="empty-state">No results found. Try a different search term.</div>';
+      return;
+    }
+    var html = results.map(function(r) {
+      var isInstalled = loadedSkillIds.has(r.id) || loadedSkillIds.has(r.npmPackage) || skillsSearchInstalling[r.id] === 'done';
+      var isInstalling = skillsSearchInstalling[r.id] === 'installing';
+      var btnClass = isInstalled ? 'skill-install-btn installed' : (isInstalling ? 'skill-install-btn installing' : 'skill-install-btn');
+      var btnText = isInstalled ? 'Installed' : (isInstalling ? 'Installing...' : 'Install');
+      var btnDisabled = isInstalled || isInstalling ? 'disabled' : '';
+      var dataAttr = 'data-discover-id="' + escHtml(r.id) + '"';
+      var repoLink = r.repoUrl ? '<a href="' + escHtml(r.repoUrl) + '" target="_blank" rel="noopener">Repository</a>' : '';
+      var version = r.version ? 'v' + escHtml(r.version) : '';
+      var transport = r.transport ? '<span class="skill-type-badge skill-type-mcp">' + escHtml(r.transport) + '</span>' : '';
+      return '<div class="skill-card" ' + dataAttr + '>' +
+        '<div class="skill-card-header">' +
+          '<div class="skill-card-info">' +
+            '<span class="skill-icon">&#9670;</span>' +
+            '<div><div class="skill-card-title">' + escHtml(r.name || r.title || r.id) + '</div></div>' +
+          '</div>' +
+          '<button class="' + btnClass + '" ' + btnDisabled + ' onclick="App.installDiscoveredSkill(this)">' + btnText + '</button>' +
+        '</div>' +
+        '<div class="skill-card-desc">' + escHtml(r.description || 'No description available') + '</div>' +
+        '<div class="skill-card-meta">' +
+          (version ? '<span>' + version + '</span>' : '') +
+          (r.npmPackage ? '<span>' + escHtml(r.npmPackage) + '</span>' : '') +
+          repoLink +
+        '</div>' +
+        '<div class="skill-card-footer">' +
+          transport +
+          (r.source ? '<span class="skill-source-badge">' + escHtml(r.source) + '</span>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+    if (append) {
+      grid.innerHTML += html;
+    } else {
+      grid.innerHTML = html;
+    }
+  }
+
+  async function installDiscoveredSkill(btnEl) {
+    var card = btnEl.closest('.skill-card');
+    if (!card) return;
+    var discoverId = card.getAttribute('data-discover-id');
+    if (!discoverId || skillsSearchInstalling[discoverId]) return;
+
+    // Gather skill data from the card
+    var name = card.querySelector('.skill-card-title') ? card.querySelector('.skill-card-title').textContent : discoverId;
+    var desc = card.querySelector('.skill-card-desc') ? card.querySelector('.skill-card-desc').textContent : '';
+    var meta = card.querySelectorAll('.skill-card-meta span');
+    var version = '';
+    var npmPackage = '';
+    meta.forEach(function(m) {
+      var t = m.textContent;
+      if (t.startsWith('v')) version = t.substring(1);
+      else if (t.includes('/') || t.startsWith('@')) npmPackage = t;
+    });
+    var repoLink = card.querySelector('.skill-card-meta a');
+    var repoUrl = repoLink ? repoLink.getAttribute('href') : '';
+
+    skillsSearchInstalling[discoverId] = 'installing';
+    btnEl.classList.add('installing');
+    btnEl.textContent = 'Installing...';
+    btnEl.disabled = true;
+
+    try {
+      await api.post('/api/skills/user/install', {
+        id: discoverId,
+        name: name,
+        description: desc,
+        version: version,
+        npmPackage: npmPackage,
+        repoUrl: repoUrl
+      });
+      skillsSearchInstalling[discoverId] = 'done';
+      btnEl.classList.remove('installing');
+      btnEl.classList.add('installed');
+      btnEl.textContent = 'Installed';
+      loadedSkillIds.add(discoverId);
+      toast('Skill installed: ' + name);
+    } catch(e) {
+      delete skillsSearchInstalling[discoverId];
+      btnEl.classList.remove('installing');
+      btnEl.textContent = 'Install';
+      btnEl.disabled = false;
+      var msg = (e && e.body && e.body.error) ? e.body.error : (e && e.message) ? e.message : 'Install failed';
+      toast(msg, 'error');
+    }
+  }
+
+  async function uninstallUserSkill(skillId) {
+    if (!confirm('Uninstall this skill?')) return;
+    try {
+      await api.del('/api/skills/user/' + skillId);
+      toast('Skill uninstalled');
+      loadedSkillIds.delete(skillId);
+      loadSkills();
+    } catch(e) {
+      var msg = (e && e.body && e.body.error) ? e.body.error : (e && e.message) ? e.message : 'Uninstall failed';
+      toast(msg, 'error');
+    }
+  }
+
   // ── Autopilot ────────────────────────────────────────
   var autopilotEditId = null;
 
@@ -4753,7 +7099,7 @@
 
       // Filter recurring autopilot tasks (have interval)
       var recurring = (tasksData.tasks || []).filter(function(t) {
-        return t.autopilot && t.interval && t.intervalUnit && t.status !== 'cancelled';
+        return t.autopilot && t.interval && t.intervalUnit && t.status !== 'cancelled' && t.status !== 'done' && t.status !== 'closed';
       });
 
       if (recurring.length === 0) {
@@ -4775,14 +7121,14 @@
         var statusLabel = isPaused ? '<span style="color:var(--warning)">Paused</span>' : '<span style="color:var(--success)">' + escHtml(task.status) + '</span>';
         var toggleIcon = isPaused ? '\u25B6' : '\u23F8';
         var toggleTitle = isPaused ? 'Resume' : 'Pause';
-        html += '<tr' + (isPaused ? ' class="ap-disabled"' : '') + '>' +
-          '<td><a href="#" onclick="App.openTask(\'' + task.id + '\');return false" style="color:var(--text-primary);text-decoration:underline">' + escHtml(task.title) + '</a></td>' +
+        html += '<tr' + (isPaused ? ' class="ap-disabled"' : '') + ' style="cursor:pointer" onclick="App.openTask(\'' + task.id + '\')">' +
+          '<td style="color:var(--text-primary)">' + escHtml(task.title) + '</td>' +
           '<td>' + escHtml(agentName) + '</td>' +
           '<td>' + interval + '</td>' +
           '<td>' + lastRun + '</td>' +
           '<td>' + nextRun + '</td>' +
           '<td>' + statusLabel + (task.runCount ? ' (#' + task.runCount + ')' : '') + '</td>' +
-          '<td class="ap-controls">' +
+          '<td class="ap-controls" onclick="event.stopPropagation()">' +
             '<button class="btn-icon" title="' + toggleTitle + '" onclick="App.toggleAutopilot(\'' + task.id + '\',' + isPaused + ')">' + toggleIcon + '</button>' +
             '<button class="btn-icon" title="Edit interval" onclick="App.editAutopilot(\'' + task.id + '\')">&#9998;</button>' +
             '<button class="btn-icon" title="Cancel task" onclick="App.deleteAutopilot(\'' + task.id + '\')">&#10005;</button>' +
@@ -4819,8 +7165,30 @@
     document.getElementById('ap-prompt').value = '';
     document.getElementById('ap-interval').value = '1';
     setCustomSelect('ap-unit-select', 'hours', 'Hours');
+    setSchedType('recurring');
+    var schedAtEl = document.getElementById('ap-scheduled-at');
+    if (schedAtEl) schedAtEl.value = '';
     await populateAutopilotAgents();
     document.getElementById('autopilot-form').classList.remove('hidden');
+  }
+
+  function setSchedType(type) {
+    var recurBtn = document.getElementById('sched-type-recurring');
+    var oneBtn = document.getElementById('sched-type-onetime');
+    var intervalFields = document.getElementById('ap-interval-fields');
+    var scheduledFields = document.getElementById('ap-scheduled-fields');
+    if (!recurBtn || !oneBtn) return;
+    if (type === 'onetime') {
+      recurBtn.classList.remove('active');
+      oneBtn.classList.add('active');
+      if (intervalFields) intervalFields.classList.add('hidden');
+      if (scheduledFields) scheduledFields.classList.remove('hidden');
+    } else {
+      recurBtn.classList.add('active');
+      oneBtn.classList.remove('active');
+      if (intervalFields) intervalFields.classList.remove('hidden');
+      if (scheduledFields) scheduledFields.classList.add('hidden');
+    }
   }
 
   function setCustomSelect(selectId, value, label) {
@@ -4893,43 +7261,66 @@
     }
     // Close all if clicking outside
     document.querySelectorAll('.custom-select.open').forEach(function(el) { el.classList.remove('open'); });
+    // Close notification dropdown if clicking outside
+    var dd = document.getElementById('notif-dropdown');
+    if (dd && dd.style.display !== 'none' && !e.target.closest('.notif-dropdown') && !e.target.closest('.notif-bell')) {
+      dd.style.display = 'none';
+    }
   });
 
   async function saveAutopilot() {
     var name = document.getElementById('ap-name').value.trim();
     var prompt = document.getElementById('ap-prompt').value.trim();
     var agentId = document.getElementById('ap-agent').value;
-    var intervalNum = parseInt(document.getElementById('ap-interval').value) || 1;
-    var unit = document.getElementById('ap-interval-unit').value;
 
     if (!name || !prompt) { toast('Name and prompt are required', 'error'); return; }
 
+    // Determine schedule type
+    var isOnetime = document.getElementById('sched-type-onetime') && document.getElementById('sched-type-onetime').classList.contains('active');
+
     try {
-      if (autopilotEditId) {
-        // Update existing task's interval fields
-        await api.put('/api/tasks/' + autopilotEditId, {
-          title: name,
-          description: prompt,
-          assignedTo: agentId,
-          interval: intervalNum,
-          intervalUnit: unit
-        });
-        toast('Recurring task updated');
+      if (isOnetime) {
+        var schedAt = document.getElementById('ap-scheduled-at').value;
+        if (!schedAt) { toast('Please select a date and time', 'error'); return; }
+        var dt = new Date(schedAt);
+        if (isNaN(dt.getTime())) { toast('Invalid date/time', 'error'); return; }
+
+        if (autopilotEditId) {
+          await api.put('/api/tasks/' + autopilotEditId, {
+            title: name, description: prompt, assignedTo: agentId,
+            scheduledAt: dt.toISOString(), interval: null, intervalUnit: null
+          });
+          toast('Scheduled task updated');
+        } else {
+          await api.post('/api/tasks', {
+            title: name, description: prompt, assignedTo: agentId,
+            status: 'planning', autopilot: true,
+            scheduledAt: dt.toISOString()
+          });
+          toast('Scheduled task created');
+        }
       } else {
-        // Create new task with autopilot + interval
-        await api.post('/api/tasks', {
-          title: name,
-          description: prompt,
-          assignedTo: agentId,
-          status: 'planning',
-          autopilot: true,
-          interval: intervalNum,
-          intervalUnit: unit
-        });
-        toast('Recurring task created');
+        var intervalNum = parseInt(document.getElementById('ap-interval').value) || 1;
+        var unit = document.getElementById('ap-interval-unit').value;
+
+        if (autopilotEditId) {
+          await api.put('/api/tasks/' + autopilotEditId, {
+            title: name, description: prompt, assignedTo: agentId,
+            interval: intervalNum, intervalUnit: unit, scheduledAt: null
+          });
+          toast('Recurring task updated');
+        } else {
+          await api.post('/api/tasks', {
+            title: name, description: prompt, assignedTo: agentId,
+            status: 'planning', autopilot: true,
+            interval: intervalNum, intervalUnit: unit
+          });
+          toast('Recurring task created');
+        }
       }
       cancelAutopilotForm();
       loadAutopilotPage();
+      loadPlannerPage();
     } catch(e) { toast('Failed to save: ' + (e.message || 'Unknown error'), 'error'); }
   }
 
@@ -4950,6 +7341,8 @@
 
   async function editAutopilot(id) {
     try {
+      // Navigate to planner where the form lives
+      if (state.currentView !== 'planner') navigate('planner');
       var task = await api.get('/api/tasks/' + id);
       if (!task) return;
       autopilotEditId = id;
@@ -4959,10 +7352,20 @@
       // Set agent custom select
       var agentOpt = document.querySelector('#ap-agent-options .custom-select-option[data-value="' + task.assignedTo + '"]');
       if (agentOpt) setCustomSelect('ap-agent-select', task.assignedTo, agentOpt.textContent);
-      // Set interval fields
-      document.getElementById('ap-interval').value = task.interval || 1;
-      var unitLabel = task.intervalUnit === 'minutes' ? 'Minutes' : task.intervalUnit === 'hours' ? 'Hours' : task.intervalUnit === 'days' ? 'Days' : 'Hours';
-      setCustomSelect('ap-unit-select', task.intervalUnit || 'hours', unitLabel);
+      // Set schedule type and interval fields
+      if (task.scheduledAt && !task.interval) {
+        setSchedType('onetime');
+        var schedAtEl = document.getElementById('ap-scheduled-at');
+        if (schedAtEl) {
+          var dt = new Date(task.scheduledAt);
+          schedAtEl.value = dt.toISOString().slice(0, 16);
+        }
+      } else {
+        setSchedType('recurring');
+        document.getElementById('ap-interval').value = task.interval || 1;
+        var unitLabel = task.intervalUnit === 'minutes' ? 'Minutes' : task.intervalUnit === 'hours' ? 'Hours' : task.intervalUnit === 'days' ? 'Days' : 'Hours';
+        setCustomSelect('ap-unit-select', task.intervalUnit || 'hours', unitLabel);
+      }
       document.getElementById('autopilot-form').classList.remove('hidden');
     } catch(e) { toast('Failed to load task', 'error'); }
   }
@@ -4981,6 +7384,202 @@
     } catch(e) { toast('Failed to cancel task', 'error'); }
   }
 
+  async function pauseSchedule(id) {
+    try {
+      await api.put('/api/tasks/' + id, { status: 'hold' });
+      toast('Schedule paused');
+      if (state.currentTaskId === id) openTask(id);
+      loadAutopilotPage();
+    } catch(e) { toast('Failed to pause schedule', 'error'); }
+  }
+
+  async function resumeSchedule(id) {
+    try {
+      await api.put('/api/tasks/' + id, { status: 'planning' });
+      toast('Schedule resumed');
+      if (state.currentTaskId === id) openTask(id);
+      loadAutopilotPage();
+    } catch(e) { toast('Failed to resume schedule', 'error'); }
+  }
+
+  async function removeSchedule(id) {
+    var ok = await confirmAction({
+      title: 'Remove Schedule',
+      message: 'This will remove the schedule but keep the task as a regular autopilot task.',
+      confirmLabel: 'Remove Schedule'
+    });
+    if (!ok) return;
+    try {
+      await api.put('/api/tasks/' + id, { interval: null, intervalUnit: null, nextRun: null, scheduledAt: null });
+      toast('Schedule removed');
+      if (state.currentTaskId === id) openTask(id);
+      loadAutopilotPage();
+    } catch(e) { toast('Failed to remove schedule', 'error'); }
+  }
+
+  async function editScheduledAt(id) {
+    var current = '';
+    try {
+      var task = await api.get('/api/tasks/' + id);
+      if (task && task.scheduledAt) {
+        var d = new Date(task.scheduledAt);
+        current = d.toISOString().slice(0, 16);
+      }
+    } catch(e) {}
+    var newVal = prompt('Enter new scheduled date/time (YYYY-MM-DDTHH:MM):', current);
+    if (!newVal) return;
+    try {
+      var dt = new Date(newVal);
+      if (isNaN(dt.getTime())) { toast('Invalid date/time', 'error'); return; }
+      await api.put('/api/tasks/' + id, { scheduledAt: dt.toISOString() });
+      toast('Scheduled time updated');
+      if (state.currentTaskId === id) openTask(id);
+      loadAutopilotPage();
+    } catch(e) { toast('Failed to update scheduled time', 'error'); }
+  }
+
+  // ── Timers (Planner) ────────────────────────────────
+
+  async function loadPlannerPage() {
+    loadPlannerRecurring();
+    loadPlannerFuture();
+    updatePlannerBadge();
+  }
+
+  async function loadPlannerRecurring() {
+    var container = document.getElementById('planner-recurring-list');
+    if (!container) return;
+    try {
+      var tasksData = await api.get('/api/tasks');
+      var agentsData = await api.get('/api/agents');
+      var agentMap = {};
+      (agentsData.agents || []).forEach(function(a) { agentMap[a.id] = a.name; });
+      agentMap['orchestrator'] = agentMap['orchestrator'] || 'Orchestrator';
+
+      var recurring = (tasksData.tasks || []).filter(function(t) {
+        return t.interval && t.intervalUnit && t.status !== 'cancelled' && t.status !== 'done' && t.status !== 'closed';
+      });
+
+      if (recurring.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:16px 0;font-size:13px">No recurring tasks</div>';
+        return;
+      }
+
+      var html = '<table class="autopilot-table"><thead><tr><th>Name</th><th>Agent</th><th>Interval</th><th>Next Run</th><th>Status</th></tr></thead><tbody>';
+      for (var i = 0; i < recurring.length; i++) {
+        var task;
+        try { task = await api.get('/api/tasks/' + recurring[i].id); } catch(e) { continue; }
+        var agentName = agentMap[task.assignedTo] || task.assignedTo || '-';
+        var interval = formatIntervalFields(task.interval, task.intervalUnit);
+        var nextRun = task.nextRun ? new Date(task.nextRun).toLocaleString() : '-';
+        var isPaused = task.status === 'hold';
+        var statusLabel = isPaused ? '<span style="color:var(--warning)">Paused</span>' : '<span style="color:var(--success)">' + escHtml(task.status) + '</span>';
+        html += '<tr' + (isPaused ? ' class="ap-disabled"' : '') + ' style="cursor:pointer" onclick="App.openTask(\'' + task.id + '\')">' +
+          '<td style="color:var(--text-primary)">' + escHtml(task.title) + '</td>' +
+          '<td>' + escHtml(agentName) + '</td>' +
+          '<td>' + interval + '</td>' +
+          '<td>' + nextRun + '</td>' +
+          '<td>' + statusLabel + (task.runCount ? ' (#' + task.runCount + ')' : '') + '</td>' +
+          '</tr>';
+      }
+      html += '</tbody></table>';
+      container.innerHTML = html;
+    } catch(e) {
+      container.innerHTML = '<div class="empty-state" style="padding:16px 0;font-size:13px">No recurring tasks</div>';
+    }
+  }
+
+  async function loadPlannerFuture() {
+    var container = document.getElementById('planner-future-list');
+    if (!container) return;
+    try {
+      var tasksData = await api.get('/api/tasks');
+      var agentsData = await api.get('/api/agents');
+      var agentMap = {};
+      (agentsData.agents || []).forEach(function(a) { agentMap[a.id] = a.name; });
+      agentMap['orchestrator'] = agentMap['orchestrator'] || 'Orchestrator';
+
+      var now = new Date();
+      var futureTasks = (tasksData.tasks || []).filter(function(t) {
+        if (t.status === 'closed' || t.status === 'done' || t.status === 'cancelled') return false;
+        if (t.interval) return false; // recurring tasks shown in the other section
+        if (t.scheduledAt) return true;
+        if (t.dueDate && new Date(t.dueDate) > now) return true;
+        return false;
+      });
+
+      if (futureTasks.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:16px 0;font-size:13px">No future tasks scheduled</div>';
+        return;
+      }
+
+      // Group by month
+      var groups = {};
+      futureTasks.forEach(function(t) {
+        var dateStr = t.scheduledAt || t.dueDate;
+        var d = new Date(dateStr);
+        var key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+        var label = d.toLocaleString('default', { month: 'long', year: 'numeric' });
+        if (!groups[key]) groups[key] = { label: label, tasks: [] };
+        groups[key].tasks.push(t);
+      });
+
+      // Sort month keys
+      var sortedKeys = Object.keys(groups).sort();
+      var html = '';
+      sortedKeys.forEach(function(key) {
+        var g = groups[key];
+        html += '<div class="planner-month-group">';
+        html += '<div class="planner-month-header">' + escHtml(g.label) + ' <span class="planner-month-count">(' + g.tasks.length + ')</span></div>';
+        g.tasks.sort(function(a, b) {
+          var da = new Date(a.scheduledAt || a.dueDate);
+          var db = new Date(b.scheduledAt || b.dueDate);
+          return da - db;
+        });
+        g.tasks.forEach(function(t) {
+          var agentName = agentMap[t.assignedTo] || t.assignedTo || '-';
+          var dateStr = t.scheduledAt || t.dueDate;
+          var dateDisplay = new Date(dateStr).toLocaleDateString('default', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          var statusClass = t.status === 'hold' ? 'warning' : t.status === 'working' ? 'success' : '';
+          html += '<div class="planner-task-item" onclick="App.openTask(\'' + t.id + '\')">';
+          html += '<div class="planner-task-title">' + escHtml(t.title) + '</div>';
+          html += '<div class="planner-task-meta">';
+          html += '<span>' + escHtml(agentName) + '</span>';
+          html += '<span>' + dateDisplay + '</span>';
+          if (statusClass) {
+            html += '<span style="color:var(--' + statusClass + ')">' + escHtml(t.status) + '</span>';
+          } else {
+            html += '<span>' + escHtml(t.status) + '</span>';
+          }
+          html += '</div></div>';
+        });
+        html += '</div>';
+      });
+      container.innerHTML = html;
+    } catch(e) {
+      container.innerHTML = '<div class="empty-state" style="padding:16px 0;font-size:13px">No future tasks scheduled</div>';
+    }
+  }
+
+  async function updatePlannerBadge() {
+    try {
+      var tasksData = state.tasks && state.tasks.length > 0 ? { tasks: state.tasks } : await api.get('/api/tasks');
+      var now = new Date();
+      var count = (tasksData.tasks || []).filter(function(t) {
+        if (t.status === 'closed' || t.status === 'done' || t.status === 'cancelled') return false;
+        if (t.interval && t.intervalUnit) return true;
+        if (t.scheduledAt) return true;
+        if (t.dueDate && new Date(t.dueDate) > now) return true;
+        return false;
+      }).length;
+      var badge = document.getElementById('nav-planner-badge');
+      if (badge) {
+        badge.textContent = count;
+        badge.classList.toggle('hidden', count === 0);
+      }
+    } catch(e) {}
+  }
+
   async function loadAutopilotPage() {
     loadAutopilot();
     loadAutopilotTasks();
@@ -4992,18 +7591,40 @@
     if (!container) return;
     try {
       var tasksData = await api.get('/api/tasks');
-      // One-time autopilot tasks: autopilot=true but NO interval
-      var tasks = (tasksData.tasks || []).filter(function(t) {
-        return t.autopilot && !t.interval && t.status !== 'closed' && t.status !== 'done' && t.status !== 'cancelled';
+      var allTasks = tasksData.tasks || [];
+
+      // One-time scheduled tasks: have scheduledAt, no interval, not closed/cancelled/done
+      var scheduled = allTasks.filter(function(t) {
+        return t.scheduledAt && !t.interval && t.status !== 'closed' && t.status !== 'cancelled' && t.status !== 'done';
       });
-      if (tasks.length === 0) {
-        container.innerHTML = '<div class="empty-state">No active one-time autopilot tasks</div>';
-        return;
-      }
+
+      // Autopilot tasks (no schedule): autopilot=true, no interval, no scheduledAt, not closed/done/cancelled
+      var autopilotOnly = allTasks.filter(function(t) {
+        return t.autopilot && !t.interval && !t.scheduledAt && t.status !== 'closed' && t.status !== 'done' && t.status !== 'cancelled';
+      });
+
       var html = '';
-      tasks.forEach(function(t) {
-        html += renderTaskCard(t, 'dashboard', false, 0);
-      });
+
+      // Section 1: One-time scheduled tasks
+      html += '<h3 style="margin-top:0;margin-bottom:8px;font-size:14px;color:var(--text-muted)">One-Time Scheduled Tasks</h3>';
+      if (scheduled.length === 0) {
+        html += '<div class="empty-state" style="padding:12px 0;font-size:13px">No one-time scheduled tasks</div>';
+      } else {
+        scheduled.forEach(function(t) {
+          html += renderTaskCard(t, 'dashboard', false, 0);
+        });
+      }
+
+      // Section 2: Autopilot tasks (no schedule)
+      html += '<h3 style="margin-top:20px;margin-bottom:8px;font-size:14px;color:var(--text-muted)">Autopilot Tasks (No Schedule)</h3>';
+      if (autopilotOnly.length === 0) {
+        html += '<div class="empty-state" style="padding:12px 0;font-size:13px">No active autopilot tasks without a schedule</div>';
+      } else {
+        autopilotOnly.forEach(function(t) {
+          html += renderTaskCard(t, 'dashboard', false, 0);
+        });
+      }
+
       container.innerHTML = html;
     } catch(e) { console.error('Failed to load autopilot tasks:', e); }
   }
@@ -5100,9 +7721,9 @@
       title: 'Dashboard & Views',
       icon: '&#9632;',
       content: '<h2>Dashboard &amp; Views</h2>' +
-        '<p>The Dashboard is your <strong>mission control</strong>. It shows all tasks, their statuses, and the latest round table summary. It defaults to showing <strong>Active</strong> tasks - all non-closed work across the team.</p>' +
-        '<h3>Stat Cards</h3>' +
-        '<p>Click any stat card to filter: <strong>Active</strong>, <strong>Pending</strong>, <strong>Working</strong>, <strong>Accepted</strong>, or <strong>Closed</strong>. The pending count includes subtasks so nothing slips through.</p>' +
+        '<p>The Dashboard is your <strong>mission control</strong>. It shows all tasks, their statuses, and the latest round table summary. It defaults to showing <strong>Pending</strong> tasks - everything needing your attention.</p>' +
+        '<h3>Tab Cards</h3>' +
+        '<p>Click any tab card to filter: <strong>Pending</strong> (planning/pending approval), <strong>Working</strong>, <strong>Done</strong>, <strong>Hold</strong>, <strong>Cancelled</strong>, or <strong>Closed</strong>. The pending count includes subtasks so nothing slips through.</p>' +
         '<h3>View Modes</h3>' +
         '<ul>' +
         '<li><strong>Tree</strong> (default) - Hierarchical view showing parent tasks with their subtasks nested below. Expandable/collapsible.</li>' +
@@ -5142,14 +7763,19 @@
         '<h3>Inline Improve</h3>' +
         '<p>When previewing a deliverable file or image, you can click <strong>Improve</strong> directly from the preview modal. Type your feedback right there - no need to go back to the task page first.</p>' +
         '<h3>Confirmation Dialogs</h3>' +
-        '<p>Both <strong>Accept</strong> and <strong>Improve</strong> now show a confirmation dialog before executing. This prevents accidental clicks and gives you a chance to add feedback text for Improve.</p>' +
+        '<p><strong>Improve</strong> shows a confirmation dialog before executing, giving you a chance to add feedback text. <strong>Accept</strong> executes immediately for a frictionless workflow. Toggling <strong>Autopilot ON</strong> requires confirmation since it lets agents execute without approval.</p>' +
         '<h3>Auto-Trigger</h3>' +
         '<p>When you click Accept or Improve, the orchestrator is <strong>immediately notified</strong> via the CLI. You do not need to run a round table or manually tell it - the agent picks up the work right away.</p>' +
         '<h3>Subtasks &amp; Dependencies</h3>' +
         '<p>Tasks can have subtasks assigned to different agents, and tasks can depend on other tasks. When all subtasks are done, the parent auto-advances. Blocked tasks (waiting on dependencies) show a lock icon.</p>' +
         '<p>Use subtasks when a goal requires <strong>multiple agents or phases</strong>. For example, a launch campaign might have a research subtask (Scout), a content subtask (Pen), and a development subtask (Dev). The parent task tracks the overall goal while subtasks track individual contributions.</p>' +
-        '<h3>Autopilot Mode</h3>' +
-        '<p>Individual tasks can be set to autopilot - the agent delivers, the orchestrator auto-accepts, and the task closes without your review. Toggle it on the task detail page.</p>' +
+        '<h3>Task Modes</h3>' +
+        '<p>Tasks operate in one of three modes:</p>' +
+        '<ol>' +
+        '<li><strong>Manual</strong> (no icon) - Standard lifecycle. Agent plans, you review, agent executes, you verify.</li>' +
+        '<li><strong>Autopilot</strong> (&#9881; gear icon) - Agent delivers, orchestrator auto-advances to done without your review. Toggle on the task detail page.</li>' +
+        '<li><strong>Timed</strong> (&#128339; clock icon) - Scheduled tasks, either recurring on an interval or one-time at a specific date/time. Timed tasks are always autopilot (locked). Manage schedules from the Autopilot page or task detail.</li>' +
+        '</ol>' +
         '<button class="help-go-link" onclick="App.navigate(\'dashboard\')">View Tasks &#8594;</button>'
     },
     {
@@ -5160,8 +7786,8 @@
         '<h3>What Happens (In Order)</h3>' +
         '<p><strong>Phase 1: Execute</strong> - The orchestrator acts before it reports:</p>' +
         '<ul>' +
-        '<li>Launches agents on working tasks (after accept)</li>' +
-        '<li>Launches agents on tasks that have your feedback (improve status)</li>' +
+        '<li>Launches agents on working tasks to execute</li>' +
+        '<li>Launches agents on planning tasks that have your feedback</li>' +
         '<li>Starts agents on any ready tasks that haven' + q + 't been picked up</li>' +
         '<li>Flags stalled work with no recent progress</li>' +
         '</ul>' +
@@ -5207,6 +7833,19 @@
         '<button class="help-go-link" onclick="App.navigate(\'add-agent\')">Add New Agent &#8594;</button>'
     },
     {
+      title: 'Timers',
+      icon: '&#128197;',
+      content: '<h2>Timers</h2>' +
+        '<p>Timers is your <strong>scheduling hub</strong> for all timed tasks - both recurring and one-time scheduled.</p>' +
+        '<h3>Recurring Tasks</h3>' +
+        '<p>Tasks that run on an interval (every X minutes, hours, or days). View their schedule, next run time, and status at a glance.</p>' +
+        '<h3>Future Tasks</h3>' +
+        '<p>Tasks with a scheduled date or future due date, grouped by month. Quickly see what is coming up and when.</p>' +
+        '<h3>Creating Timed Tasks</h3>' +
+        '<p>Use the <strong>+ Add Timed Task</strong> button to create a new recurring or one-time scheduled task. Choose an agent, set the schedule, and it will appear in both the Timers and Autopilot pages.</p>' +
+        '<button class="help-go-link" onclick="App.navigate(\'planner\')">Go to Timers &#8594;</button>'
+    },
+    {
       title: 'Autopilot',
       icon: '&#9881;',
       content: '<h2>Autopilot</h2>' +
@@ -5216,6 +7855,7 @@
         '<p><strong>2. Scheduled autopilot</strong> - Create recurring schedules that fire automatically on an interval. Assign a prompt to an agent, set how often it runs (minutes, hours, days), and let it go. Good for daily standups, periodic research, content generation, or system checks.</p>' +
         '<h3>Safety</h3>' +
         '<p>Autopilot tasks still appear in the dashboard with a gear icon so you can monitor them. Use <strong>Pause All</strong> to instantly stop all schedules if needed. You can toggle autopilot off on any task at any time to re-enable human review.</p>' +
+        '<p>To create new timed tasks, use the <strong>Timers</strong> page.</p>' +
         '<button class="help-go-link" onclick="App.navigate(\'autopilot\')">Go to Autopilot &#8594;</button>'
     },
     {
@@ -5269,7 +7909,7 @@
     },
     {
       title: 'Security & Secrets',
-      icon: '&#128274;',
+      icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
       content: '<h2>Security &amp; Secrets</h2>' +
         '<p>Orchivra runs <strong>100% locally</strong> on your machine. No cloud, no external servers, no telemetry. Your data never leaves your computer unless you explicitly tell an agent to post or send something.</p>' +
         '<h3>Agent Sandbox - What You Need to Know</h3>' +
@@ -5382,6 +8022,22 @@
     contentEl.innerHTML = helpTopics[idx].content;
   }
 
+  async function loadTerms() {
+    var el = document.getElementById('terms-content');
+    if (!el) return;
+    try {
+      var resp = await fetch('/TERMS.md');
+      var text = await resp.text();
+      if (typeof marked !== 'undefined' && marked.parse) {
+        el.innerHTML = marked.parse(text);
+      } else {
+        el.textContent = text;
+      }
+    } catch(e) {
+      el.textContent = 'Failed to load terms. See TERMS.md in the project root.';
+    }
+  }
+
   function selectHelpTopic(index) {
     var items = document.querySelectorAll('.help-topic-item');
     items.forEach(function(item, i) {
@@ -5420,11 +8076,764 @@
     }, true);
   })();
 
+  // ── Model Routing ─────────────────────────────────────
+  var MODEL_DISPLAY = { opus: 'Opus 4.6', sonnet: 'Sonnet 4.6', haiku: 'Haiku 4.5' };
+
+  async function loadModelRoutingState() {
+    try {
+      state.modelRouting = await api.get('/api/settings/model-routing');
+    } catch(e) {
+      state.modelRouting = { mode: 'default' };
+    }
+  }
+  var TASK_TYPES = ['general', 'research', 'development', 'content', 'review', 'operations'];
+
+  async function renderModelRoutingSettings() {
+    var container = document.getElementById('model-routing-content');
+    if (!container) return;
+    try {
+      var config = await api.get('/api/settings/model-routing');
+      var agentsData = await api.get('/api/agents');
+      var agents = agentsData.agents || [];
+      state.modelRouting = config;
+
+      var html = '';
+      // Mode selector
+      html += '<div class="model-routing-modes">';
+      var modes = [
+        { value: 'default', label: 'Default', desc: 'All agents use your configured Claude model. No optimization applied.' },
+        { value: 'manual', label: 'Manual', desc: 'Choose a model for each agent. Use presets for quick setup.' },
+        { value: 'smart', label: 'Smart', desc: 'Platform auto-selects the optimal model based on task type, complexity, and agent role.' }
+      ];
+      modes.forEach(function(mode) {
+        var isActive = config.mode === mode.value;
+        html += '<label class="model-routing-mode-option' + (isActive ? ' active' : '') + '">';
+        html += '<input type="radio" name="model-routing-mode" value="' + mode.value + '"' + (isActive ? ' checked' : '') + ' onchange="App.saveModelRoutingMode(\'' + mode.value + '\')">';
+        html += '<div><div class="model-routing-mode-label">' + mode.label + '</div>';
+        html += '<div class="model-routing-mode-desc">' + mode.desc + '</div></div>';
+        html += '</label>';
+      });
+      html += '</div>';
+
+      // Manual mode panel
+      if (config.mode === 'manual') {
+        html += '<div class="mr-section-label">Presets</div>';
+        html += '<div class="preset-buttons" id="preset-buttons"></div>';
+        html += '<div class="mr-section-label">Agent Model Assignments</div>';
+        html += '<table class="model-table"><thead><tr><th>Agent</th><th>Role</th><th>Model</th><th></th></tr></thead><tbody>';
+        agents.forEach(function(a) {
+          var model = a.isOrchestrator ? (config.orchestratorModel || '') : ((config.agentModels || {})[a.id] || '');
+          var modelDisplay = model ? MODEL_DISPLAY[model] || model : 'System Default';
+          html += '<tr><td>' + escHtml(a.name) + '</td><td style="color:var(--text-muted)">' + escHtml(a.role || '-') + '</td>';
+          html += '<td class="model-cell">' + modelDisplay + '</td>';
+          if (!a.isOrchestrator) {
+            html += '<td><a class="model-edit-link" href="#" onclick="event.preventDefault();App.navigate(\'agent-detail\');App.loadAgentDetail(\'' + a.id + '\')">Edit</a></td>';
+          } else {
+            html += '<td></td>';
+          }
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+      }
+
+      // Smart mode panel
+      if (config.mode === 'smart') {
+        var sc = config.smartConfig || {};
+        html += '<div class="smart-config-section">';
+
+        // Show routing decisions checkbox
+        html += '<div class="smart-config-row">';
+        html += '<input type="checkbox" id="mr-show-decisions"' + (sc.showRoutingDecision !== false ? ' checked' : '') + ' onchange="App.saveModelRoutingConfig({smartConfig:{showRoutingDecision:this.checked}})">';
+        html += '<label for="mr-show-decisions" style="font-size:13px">Show routing decisions in task logs</label>';
+        html += '</div>';
+
+        // Floor / Ceiling
+        html += '<div class="smart-config-row">';
+        html += '<span class="smart-config-label">Model Floor:</span>';
+        html += '<select onchange="App.saveModelRoutingConfig({smartConfig:{minModel:this.value}})">';
+        ['haiku', 'sonnet', 'opus'].forEach(function(m) {
+          html += '<option value="' + m + '"' + ((sc.minModel || 'haiku') === m ? ' selected' : '') + '>' + MODEL_DISPLAY[m] + '</option>';
+        });
+        html += '</select></div>';
+
+        html += '<div class="smart-config-row">';
+        html += '<span class="smart-config-label">Model Ceiling:</span>';
+        html += '<select onchange="App.saveModelRoutingConfig({smartConfig:{maxModel:this.value}})">';
+        ['haiku', 'sonnet', 'opus'].forEach(function(m) {
+          html += '<option value="' + m + '"' + ((sc.maxModel || 'opus') === m ? ' selected' : '') + '>' + MODEL_DISPLAY[m] + '</option>';
+        });
+        html += '</select></div>';
+
+        // Agent overrides
+        html += '<h4>Agent Overrides</h4>';
+        html += '<table class="override-table">';
+        var ao = sc.agentOverrides || {};
+        Object.keys(ao).forEach(function(agentId) {
+          var agentObj = agents.find(function(a) { return a.id === agentId; });
+          var agentName = agentObj ? agentObj.name : agentId;
+          html += '<tr><td>' + escHtml(agentName) + '</td><td>';
+          html += '<select onchange="App.updateSmartAgentOverride(\'' + agentId + '\',this.value)">';
+          ['haiku', 'sonnet', 'opus'].forEach(function(m) {
+            html += '<option value="' + m + '"' + (ao[agentId] === m ? ' selected' : '') + '>' + MODEL_DISPLAY[m] + '</option>';
+          });
+          html += '</select></td>';
+          html += '<td><button class="override-remove-btn" onclick="App.removeSmartAgentOverride(\'' + agentId + '\')">&times; Remove</button></td></tr>';
+        });
+        html += '</table>';
+        // Add override button
+        var availableAgents = agents.filter(function(a) { return !ao[a.id] && !a.isOrchestrator; });
+        if (availableAgents.length > 0) {
+          html += '<button class="override-add-btn" onclick="App.addSmartAgentOverride()">+ Add agent override</button>';
+        }
+
+        // Task type overrides
+        html += '<h4>Task Type Overrides</h4>';
+        html += '<table class="override-table">';
+        var tto = sc.taskTypeOverrides || {};
+        Object.keys(tto).forEach(function(tt) {
+          html += '<tr><td>' + escHtml(tt) + '</td><td>';
+          html += '<select onchange="App.updateSmartTaskTypeOverride(\'' + tt + '\',this.value)">';
+          ['haiku', 'sonnet', 'opus'].forEach(function(m) {
+            html += '<option value="' + m + '"' + (tto[tt] === m ? ' selected' : '') + '>' + MODEL_DISPLAY[m] + '</option>';
+          });
+          html += '</select></td>';
+          html += '<td><button class="override-remove-btn" onclick="App.removeSmartTaskTypeOverride(\'' + tt + '\')">&times; Remove</button></td></tr>';
+        });
+        html += '</table>';
+        var usedTypes = Object.keys(tto);
+        var availableTypes = TASK_TYPES.filter(function(t) { return usedTypes.indexOf(t) === -1; });
+        if (availableTypes.length > 0) {
+          html += '<button class="override-add-btn" onclick="App.addSmartTaskTypeOverride()">+ Add type override</button>';
+        }
+
+        html += '<br><button class="smart-reset-btn" onclick="App.resetSmartConfig()">Reset to defaults</button>';
+        html += '</div>';
+      }
+
+      container.innerHTML = html;
+
+      // Load presets for manual mode
+      if (config.mode === 'manual') {
+        loadPresetButtons();
+      }
+    } catch(e) {
+      container.innerHTML = '<p style="color:var(--text-muted)">Failed to load model routing settings.</p>';
+      console.error('Model routing load error:', e);
+    }
+  }
+
+  async function loadPresetButtons() {
+    var container = document.getElementById('preset-buttons');
+    if (!container) return;
+    try {
+      var data = await api.get('/api/settings/model-routing/presets');
+      var html = '';
+      (data.presets || []).forEach(function(p) {
+        html += '<button class="preset-btn" onclick="App.applyModelPreset(\'' + p.name + '\')">';
+        html += '<span class="preset-name">' + p.name.charAt(0).toUpperCase() + p.name.slice(1) + '</span>';
+        html += '<span class="preset-savings">' + escHtml(p.savings) + ' savings</span>';
+        html += '</button>';
+      });
+      container.innerHTML = html;
+    } catch(e) { console.error('Failed to load presets:', e); }
+  }
+
+  async function saveModelRoutingMode(mode) {
+    try {
+      await api.put('/api/settings/model-routing', { mode: mode });
+      toast('Model routing mode updated');
+      renderModelRoutingSettings();
+    } catch(e) { toast('Failed to update mode', 'error'); }
+  }
+
+  async function applyModelPreset(name) {
+    try {
+      await api.post('/api/settings/model-routing/presets/' + name, {});
+      toast('Preset "' + name + '" applied');
+      renderModelRoutingSettings();
+    } catch(e) { toast('Failed to apply preset', 'error'); }
+  }
+
+  async function saveModelRoutingConfig(updates) {
+    try {
+      await api.put('/api/settings/model-routing', updates);
+      toast('Settings saved');
+      renderModelRoutingSettings();
+    } catch(e) { toast(e.message || 'Failed to save', 'error'); }
+  }
+
+  async function addSmartAgentOverride() {
+    try {
+      var agentsData = await api.get('/api/agents');
+      var config = await api.get('/api/settings/model-routing');
+      var ao = (config.smartConfig && config.smartConfig.agentOverrides) || {};
+      var available = (agentsData.agents || []).filter(function(a) { return !ao[a.id] && !a.isOrchestrator; });
+      if (available.length === 0) { toast('All agents have overrides'); return; }
+      var agent = available[0];
+      ao[agent.id] = 'sonnet';
+      await api.put('/api/settings/model-routing', { smartConfig: { agentOverrides: ao } });
+      renderModelRoutingSettings();
+    } catch(e) { toast('Failed to add override', 'error'); }
+  }
+
+  async function removeSmartAgentOverride(agentId) {
+    try {
+      var config = await api.get('/api/settings/model-routing');
+      var ao = (config.smartConfig && config.smartConfig.agentOverrides) || {};
+      delete ao[agentId];
+      await api.put('/api/settings/model-routing', { smartConfig: { agentOverrides: ao } });
+      renderModelRoutingSettings();
+    } catch(e) { toast('Failed to remove override', 'error'); }
+  }
+
+  async function updateSmartAgentOverride(agentId, model) {
+    try {
+      var config = await api.get('/api/settings/model-routing');
+      var ao = (config.smartConfig && config.smartConfig.agentOverrides) || {};
+      ao[agentId] = model;
+      await api.put('/api/settings/model-routing', { smartConfig: { agentOverrides: ao } });
+      toast('Override updated');
+    } catch(e) { toast('Failed to update', 'error'); }
+  }
+
+  async function addSmartTaskTypeOverride() {
+    try {
+      var config = await api.get('/api/settings/model-routing');
+      var tto = (config.smartConfig && config.smartConfig.taskTypeOverrides) || {};
+      var usedTypes = Object.keys(tto);
+      var available = TASK_TYPES.filter(function(t) { return usedTypes.indexOf(t) === -1; });
+      if (available.length === 0) { toast('All task types have overrides'); return; }
+      tto[available[0]] = 'sonnet';
+      await api.put('/api/settings/model-routing', { smartConfig: { taskTypeOverrides: tto } });
+      renderModelRoutingSettings();
+    } catch(e) { toast('Failed to add override', 'error'); }
+  }
+
+  async function removeSmartTaskTypeOverride(taskType) {
+    try {
+      var config = await api.get('/api/settings/model-routing');
+      var tto = (config.smartConfig && config.smartConfig.taskTypeOverrides) || {};
+      delete tto[taskType];
+      await api.put('/api/settings/model-routing', { smartConfig: { taskTypeOverrides: tto } });
+      renderModelRoutingSettings();
+    } catch(e) { toast('Failed to remove override', 'error'); }
+  }
+
+  async function updateSmartTaskTypeOverride(taskType, model) {
+    try {
+      var config = await api.get('/api/settings/model-routing');
+      var tto = (config.smartConfig && config.smartConfig.taskTypeOverrides) || {};
+      tto[taskType] = model;
+      await api.put('/api/settings/model-routing', { smartConfig: { taskTypeOverrides: tto } });
+      toast('Override updated');
+    } catch(e) { toast('Failed to update', 'error'); }
+  }
+
+  async function resetSmartConfig() {
+    if (!confirm('Reset Smart routing to defaults?')) return;
+    try {
+      await api.put('/api/settings/model-routing', {
+        smartConfig: {
+          agentOverrides: {},
+          taskTypeOverrides: {},
+          showRoutingDecision: true,
+          minModel: 'haiku',
+          maxModel: 'opus'
+        }
+      });
+      toast('Smart config reset');
+      renderModelRoutingSettings();
+    } catch(e) { toast('Failed to reset', 'error'); }
+  }
+
+  async function saveAgentModel() {
+    var model = document.getElementById('agent-model-select').value || null;
+    try {
+      var update = { agentModels: {} };
+      update.agentModels[state.currentAgentId] = model;
+      await api.put('/api/settings/model-routing', update);
+      toast('Model updated');
+      // Refresh info text
+      var config = await api.get('/api/settings/model-routing');
+      state.modelRouting = config;
+      updateAgentModelInfo(config);
+    } catch(e) { toast('Failed to update model', 'error'); }
+  }
+
+  function updateAgentModelInfo(config) {
+    var infoEl = document.getElementById('agent-model-info');
+    var barEl = document.getElementById('agent-model-bar');
+    if (!infoEl || !barEl) return;
+    var mode = config.mode || 'default';
+    if (mode === 'default') {
+      infoEl.textContent = 'Model routing is set to Default. This setting takes effect in Manual/Smart mode.';
+      barEl.classList.add('dimmed');
+    } else if (mode === 'manual') {
+      infoEl.textContent = 'This model will be used for all tasks assigned to this agent.';
+      barEl.classList.remove('dimmed');
+    } else {
+      infoEl.textContent = 'This setting is registered as a Smart mode override.';
+      barEl.classList.remove('dimmed');
+    }
+  }
+
+  // ── Bug Report ──────────────────────────────────────────
+  var _bugDiagnostics = null;
+  var _bugScreenshotData = null;
+  var _bugSubmitCooldown = false;
+
+  function showBugReportModal() {
+    var modal = document.getElementById('bug-report-modal');
+    modal.classList.remove('hidden');
+    document.getElementById('bug-report-form-container').classList.remove('hidden');
+    document.getElementById('bug-report-success').classList.add('hidden');
+    document.getElementById('bug-report-title').value = '';
+    document.getElementById('bug-report-description').value = '';
+    document.getElementById('bug-report-steps').value = '';
+    document.getElementById('bug-report-category').value = 'bug';
+    document.querySelector('input[name="bug-severity"][value="minor"]').checked = true;
+    document.getElementById('bug-report-include-diag').checked = true;
+    document.getElementById('bug-report-include-screenshot').checked = false;
+    document.getElementById('bug-report-screenshot-area').classList.add('hidden');
+    document.getElementById('bug-report-preview').classList.add('hidden');
+    document.getElementById('bug-report-dropzone').classList.remove('hidden');
+    _bugScreenshotData = null;
+    var submitBtn = document.getElementById('bug-report-submit');
+    submitBtn.disabled = _bugSubmitCooldown;
+    submitBtn.textContent = _bugSubmitCooldown ? 'Please wait...' : 'Submit Report';
+
+    // Fetch diagnostics
+    _bugDiagnostics = null;
+    document.getElementById('bug-report-diag-summary').textContent = 'Loading diagnostics...';
+    document.getElementById('bug-report-diag-details').textContent = '';
+    document.getElementById('bug-report-diag-details').classList.add('hidden');
+
+    api.get('/api/diagnostics').then(function(diag) {
+      _bugDiagnostics = diag;
+      var summary = (diag.appVersion ? 'Orchivra v' + diag.appVersion : 'Orchivra') +
+        ' | ' + (diag.platform === 'win32' ? 'Windows' : diag.platform) + ' ' + (diag.osRelease || '') +
+        ' | Node ' + (diag.nodeVersion || '');
+      document.getElementById('bug-report-diag-summary').textContent = summary;
+      var details = JSON.stringify(diag, null, 2);
+      document.getElementById('bug-report-diag-details').textContent = details;
+    }).catch(function() {
+      document.getElementById('bug-report-diag-summary').textContent = 'Could not load diagnostics';
+    });
+
+    // Setup drag-and-drop
+    var dropzone = document.getElementById('bug-report-dropzone');
+    dropzone.ondragover = function(e) { e.preventDefault(); dropzone.classList.add('drag-over'); };
+    dropzone.ondragleave = function() { dropzone.classList.remove('drag-over'); };
+    dropzone.ondrop = function(e) {
+      e.preventDefault();
+      dropzone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length > 0) handleScreenshotFileObj(e.dataTransfer.files[0]);
+    };
+
+    // Setup paste
+    modal.onpaste = function(e) {
+      var items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          handleScreenshotFileObj(items[i].getAsFile());
+          document.getElementById('bug-report-include-screenshot').checked = true;
+          document.getElementById('bug-report-screenshot-area').classList.remove('hidden');
+          break;
+        }
+      }
+    };
+  }
+
+  function closeBugReportModal() {
+    document.getElementById('bug-report-modal').classList.add('hidden');
+    _bugScreenshotData = null;
+  }
+
+  function toggleBugDiagnostics() {
+    var details = document.getElementById('bug-report-diag-details');
+    var btn = details.previousElementSibling.querySelector('.diag-toggle') ||
+              details.parentElement.querySelector('.diag-toggle');
+    if (details.classList.contains('hidden')) {
+      details.classList.remove('hidden');
+      if (btn) btn.textContent = 'Hide details';
+    } else {
+      details.classList.add('hidden');
+      if (btn) btn.textContent = 'Show details';
+    }
+  }
+
+  function toggleScreenshotArea() {
+    var checked = document.getElementById('bug-report-include-screenshot').checked;
+    var area = document.getElementById('bug-report-screenshot-area');
+    if (checked) area.classList.remove('hidden');
+    else area.classList.add('hidden');
+  }
+
+  function handleScreenshotFile(input) {
+    if (input.files && input.files[0]) handleScreenshotFileObj(input.files[0]);
+  }
+
+  function handleScreenshotFileObj(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      _bugScreenshotData = e.target.result;
+      document.getElementById('bug-report-preview-img').src = _bugScreenshotData;
+      document.getElementById('bug-report-preview').classList.remove('hidden');
+      document.getElementById('bug-report-dropzone').classList.add('hidden');
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function removeScreenshot() {
+    _bugScreenshotData = null;
+    document.getElementById('bug-report-preview').classList.add('hidden');
+    document.getElementById('bug-report-dropzone').classList.remove('hidden');
+    document.getElementById('bug-report-file-input').value = '';
+  }
+
+  async function submitBugReport() {
+    var title = document.getElementById('bug-report-title').value.trim();
+    var description = document.getElementById('bug-report-description').value.trim();
+    var steps = document.getElementById('bug-report-steps').value.trim();
+    var category = document.getElementById('bug-report-category').value;
+    var severityEl = document.querySelector('input[name="bug-severity"]:checked');
+    var severity = severityEl ? severityEl.value : 'minor';
+    var includeDiag = document.getElementById('bug-report-include-diag').checked;
+
+    if (!title) { toast('Title is required'); return; }
+    if (description.length < 20) { toast('Description must be at least 20 characters'); return; }
+
+    var submitBtn = document.getElementById('bug-report-submit');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitting...';
+
+    try {
+      var payload = {
+        title: title,
+        description: description,
+        steps: steps || null,
+        category: category,
+        severity: severity,
+        includeDiagnostics: includeDiag,
+        diagnostics: includeDiag ? _bugDiagnostics : null
+      };
+
+      var result = await api.post('/api/bug-report', payload);
+
+      // Show success
+      document.getElementById('bug-report-form-container').classList.add('hidden');
+      document.getElementById('bug-report-success').classList.remove('hidden');
+
+      if (result.issueUrl) {
+        document.getElementById('bug-report-success-msg').textContent =
+          'Your bug report has been submitted as a GitHub Issue.' +
+          (result.issueNumber ? ' Issue #' + result.issueNumber + ': "' + title + '"' : '');
+        var link = document.getElementById('bug-report-issue-link');
+        link.href = result.issueUrl;
+        link.classList.remove('hidden');
+      } else {
+        document.getElementById('bug-report-success-msg').textContent = 'Your report has been submitted. Thank you!';
+      }
+
+      // 30-second cooldown
+      _bugSubmitCooldown = true;
+      setTimeout(function() { _bugSubmitCooldown = false; }, 30000);
+
+    } catch (err) {
+      toast(err.message || 'Failed to submit report');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Submit Report';
+    }
+  }
+
+  // ── Mind Map ──────────────────────────────────
+  var pmState = {
+    projects: [],
+    selectedProject: null,
+    mapData: null,
+    mapVersion: null,
+    expanded: {},
+    pollTimer: null
+  };
+
+  async function loadMindMap() {
+    try {
+      pmState.projects = await api.get('/api/project-specs');
+    } catch (e) { pmState.projects = []; }
+    renderPMProjectSelector();
+    if (pmState.projects.length > 0) {
+      var sel = pmState.selectedProject || pmState.projects[0].id;
+      selectPMProject(sel);
+    } else {
+      pmState.mapData = null;
+      renderPMStats(null);
+      renderPMLegend();
+      document.getElementById('pm-grid').innerHTML = '<div class="empty-state"><div class="empty-state-text">No project specs yet</div><div class="empty-state-hint">Project specs are created by agents during task execution</div></div>';
+    }
+    startPMPolling();
+  }
+
+  function renderPMProjectSelector() {
+    var dd = document.getElementById('pm-project-dropdown');
+    if (!dd) return;
+    var html = '';
+    pmState.projects.forEach(function(p) {
+      var cls = (p.id === pmState.selectedProject) ? ' selected' : '';
+      html += '<div class="custom-select-option' + cls + '" data-value="' + p.id + '" onclick="App.selectPMProject(\'' + p.id + '\')">' + escHtml(p.name) + '</div>';
+    });
+    dd.innerHTML = html;
+    var trigger = document.querySelector('#pm-project-select .custom-select-trigger');
+    if (trigger && pmState.selectedProject) {
+      var proj = pmState.projects.find(function(p) { return p.id === pmState.selectedProject; });
+      if (proj) trigger.textContent = proj.name;
+    }
+  }
+
+  async function selectPMProject(projectId) {
+    pmState.selectedProject = projectId;
+    renderPMProjectSelector();
+    var trigger = document.querySelector('#pm-project-select .custom-select-trigger');
+    var proj = pmState.projects.find(function(p) { return p.id === projectId; });
+    if (trigger && proj) trigger.textContent = proj.name;
+    document.querySelector('#pm-project-select').classList.remove('open');
+    try {
+      pmState.mapData = await api.get('/api/project-specs/' + projectId + '/map');
+      pmState.mapVersion = pmState.mapData.version;
+    } catch (e) {
+      pmState.mapData = null;
+    }
+    renderPMStats(pmState.mapData);
+    renderPMLegend();
+    renderPMGrid(pmState.mapData);
+  }
+
+  function startPMPolling() {
+    stopPMPolling();
+    pmState.pollTimer = setInterval(async function() {
+      if (state.currentView !== 'mind-map' || !pmState.selectedProject) return;
+      try {
+        var data = await api.get('/api/project-specs/' + pmState.selectedProject + '/map');
+        if (data.version !== pmState.mapVersion) {
+          pmState.mapData = data;
+          pmState.mapVersion = data.version;
+          renderPMStats(data);
+          renderPMGrid(data);
+        }
+      } catch (e) { /* silent */ }
+    }, 10000);
+  }
+
+  function stopPMPolling() {
+    if (pmState.pollTimer) { clearInterval(pmState.pollTimer); pmState.pollTimer = null; }
+  }
+
+  function renderPMStats(data) {
+    var el = document.getElementById('pm-stats-row');
+    if (!el) return;
+    if (!data || !data.chapters) { el.innerHTML = ''; return; }
+    var chapters = data.chapters;
+    var total = chapters.length;
+    var stable = 0, inProgress = 0, broken = 0, planned = 0;
+    chapters.forEach(function(ch) {
+      if (ch.status === 'stable') stable++;
+      else if (ch.status === 'in-progress') inProgress++;
+      else if (ch.status === 'broken') broken++;
+      else planned++;
+    });
+    el.innerHTML =
+      '<div class="pm-stat-card"><div class="pm-stat-value">' + total + '</div><div class="pm-stat-label">Chapters</div></div>' +
+      '<div class="pm-stat-card"><div class="pm-stat-value pm-color-green">' + stable + '</div><div class="pm-stat-label">Stable</div></div>' +
+      '<div class="pm-stat-card"><div class="pm-stat-value pm-color-yellow">' + inProgress + '</div><div class="pm-stat-label">In Progress</div></div>' +
+      '<div class="pm-stat-card"><div class="pm-stat-value pm-color-red">' + broken + '</div><div class="pm-stat-label">Broken</div></div>' +
+      '<div class="pm-stat-card"><div class="pm-stat-value">' + planned + '</div><div class="pm-stat-label">Planned</div></div>';
+  }
+
+  function renderPMLegend() {
+    var el = document.getElementById('pm-legend');
+    if (!el) return;
+    el.innerHTML =
+      '<div class="pm-legend-item"><div class="pm-legend-dot pm-dot-stable"></div>Stable</div>' +
+      '<div class="pm-legend-item"><div class="pm-legend-dot pm-dot-in-progress"></div>In Progress</div>' +
+      '<div class="pm-legend-item"><div class="pm-legend-dot pm-dot-broken"></div>Broken</div>' +
+      '<div class="pm-legend-item"><div class="pm-legend-dot pm-dot-planned"></div>Planned</div>';
+  }
+
+  function pmStatusClass(status) {
+    if (status === 'stable') return 'pm-status-stable';
+    if (status === 'in-progress') return 'pm-status-in-progress';
+    if (status === 'broken') return 'pm-status-broken';
+    return 'pm-status-planned';
+  }
+
+  function pmFeatureDotClass(status) {
+    if (status === 'done') return 'pm-fdot-done';
+    if (status === 'in-progress') return 'pm-fdot-in-progress';
+    if (status === 'broken') return 'pm-fdot-broken';
+    return 'pm-fdot-planned';
+  }
+
+  function renderPMGrid(data) {
+    var grid = document.getElementById('pm-grid');
+    if (!grid) return;
+    if (!data || !data.chapters || data.chapters.length === 0) {
+      grid.innerHTML = '<div class="empty-state"><div class="empty-state-text">No chapters in this project</div></div>';
+      return;
+    }
+    var html = '';
+    data.chapters.forEach(function(ch) {
+      var isExpanded = pmState.expanded[ch.id];
+      var expandedClass = isExpanded ? ' expanded' : '';
+      var features = ch.features || [];
+      var doneCount = features.filter(function(f) { return f.status === 'done'; }).length;
+      var totalFeatures = features.length;
+      var pct = totalFeatures > 0 ? Math.round((doneCount / totalFeatures) * 100) : 0;
+      html += '<div class="pm-chapter-card ' + pmStatusClass(ch.status) + expandedClass + '" data-chapter-id="' + ch.id + '">';
+      html += '<div class="pm-chapter-header" onclick="App.togglePMChapter(\'' + ch.id + '\')">';
+      html += '<span class="pm-chapter-name" title="' + escHtml(ch.name) + '">' + escHtml(ch.name) + '</span>';
+      html += '<span class="pm-chapter-badge">' + doneCount + '/' + totalFeatures + '</span>';
+      html += '<span class="pm-chapter-info" onclick="event.stopPropagation(); App.openPMChapterDetail(\'' + ch.id + '\')" title="View chapter details">&#9432;</span>';
+      html += '<span class="pm-chapter-chevron">&#9654;</span>';
+      html += '</div>';
+      html += '<div class="pm-chapter-progress"><div class="pm-chapter-progress-fill" style="width:' + pct + '%"></div></div>';
+      html += '<div class="pm-features">';
+      if (features.length > 0) {
+        html += '<div class="pm-feature-list">';
+        features.forEach(function(f) {
+          html += '<div class="pm-feature-item" onclick="event.stopPropagation(); App.openPMFeatureDetail(\'' + ch.id + '\',\'' + f.id + '\')">';
+          html += '<span class="pm-feature-dot ' + pmFeatureDotClass(f.status) + '"></span>';
+          html += '<span class="pm-feature-name">' + escHtml(f.name) + '</span>';
+          html += '</div>';
+        });
+        html += '</div>';
+      } else {
+        html += '<div class="pm-empty-section">No features defined</div>';
+      }
+      html += '</div>';
+      html += '</div>';
+    });
+    grid.innerHTML = html;
+  }
+
+  function togglePMChapter(chapterId) {
+    pmState.expanded[chapterId] = !pmState.expanded[chapterId];
+    var card = document.querySelector('.pm-chapter-card[data-chapter-id="' + chapterId + '"]');
+    if (card) card.classList.toggle('expanded');
+  }
+
+  async function openPMChapterDetail(chapterId) {
+    if (!pmState.mapData) return;
+    var chapter = pmState.mapData.chapters.find(function(ch) { return ch.id === chapterId; });
+    if (!chapter) return;
+    var overlay = document.getElementById('pm-detail-overlay');
+    var panel = document.getElementById('pm-detail-panel');
+    var titleEl = panel.querySelector('.pm-detail-title');
+    var contentEl = panel.querySelector('.pm-detail-content');
+    var badgeClass = 'pm-badge-' + (chapter.status === 'in-progress' ? 'in-progress' : chapter.status);
+    titleEl.innerHTML = escHtml(chapter.name) + ' <span class="pm-detail-status-badge ' + badgeClass + '">' + escHtml(chapter.status) + '</span>';
+    contentEl.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">Loading chapter content...</div>';
+    overlay.classList.remove('hidden');
+    requestAnimationFrame(function() { overlay.classList.add('visible'); });
+    // Load chapter markdown
+    try {
+      var resp = await fetch('/api/project-specs/' + pmState.selectedProject + '/chapters/' + chapterId);
+      if (resp.ok) {
+        var text = await resp.text();
+        try { var json = JSON.parse(text); text = json.content || text; } catch(e) {}
+        if (typeof marked !== 'undefined' && marked.parse) {
+          contentEl.innerHTML = '<div class="pm-detail-md">' + marked.parse(text) + '</div>';
+        } else {
+          contentEl.innerHTML = '<pre style="white-space:pre-wrap;font-size:13px;color:var(--text-muted);">' + escHtml(text) + '</pre>';
+        }
+      } else {
+        contentEl.innerHTML = '<div class="pm-empty-section">No chapter content available</div>';
+      }
+    } catch(e) {
+      contentEl.innerHTML = '<div class="pm-empty-section">Failed to load chapter content</div>';
+    }
+  }
+
+  function openPMFeatureDetail(chapterId, featureId) {
+    if (!pmState.mapData) return;
+    var chapter = pmState.mapData.chapters.find(function(ch) { return ch.id === chapterId; });
+    if (!chapter) return;
+    var feature = (chapter.features || []).find(function(f) { return f.id === featureId; });
+    if (!feature) return;
+    var overlay = document.getElementById('pm-detail-overlay');
+    var panel = document.getElementById('pm-detail-panel');
+    var titleEl = panel.querySelector('.pm-detail-title');
+    var contentEl = panel.querySelector('.pm-detail-content');
+    var badgeClass = 'pm-badge-' + (feature.status === 'in-progress' ? 'in-progress' : feature.status);
+    titleEl.innerHTML = escHtml(feature.name) + ' <span class="pm-detail-status-badge ' + badgeClass + '">' + escHtml(feature.status) + '</span>';
+    var html = '';
+    html += '<div class="pm-feature-status-row"><span class="pm-feature-dot ' + pmFeatureDotClass(feature.status) + '"></span><span style="font-size:13px;color:var(--text-muted);">' + escHtml(feature.status) + '</span></div>';
+    html += '<h3>Chapter</h3>';
+    html += '<div style="font-size:13px;color:var(--text-muted);cursor:pointer;" onclick="App.openPMChapterDetail(\'' + chapterId + '\')">' + escHtml(chapter.name) + ' &#8594;</div>';
+    // Key files
+    html += '<h3>Key Files</h3>';
+    if (feature.keyFiles && feature.keyFiles.length > 0) {
+      html += '<div class="pm-key-files">';
+      feature.keyFiles.forEach(function(f) {
+        html += '<div class="pm-key-file">' + escHtml(f) + '</div>';
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="pm-empty-section">No key files listed</div>';
+    }
+    // Linked tasks
+    html += '<h3>Linked Tasks</h3>';
+    if (feature.linkedTasks && feature.linkedTasks.length > 0) {
+      html += '<div class="pm-linked-tasks">';
+      feature.linkedTasks.forEach(function(t) {
+        html += '<div class="pm-linked-task" onclick="App.closePMDetail(); App.openTask(\'' + escHtml(t) + '\')">' + escHtml(t) + '</div>';
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="pm-empty-section">No linked tasks</div>';
+    }
+    contentEl.innerHTML = html;
+    overlay.classList.remove('hidden');
+    requestAnimationFrame(function() { overlay.classList.add('visible'); });
+  }
+
+  function closePMDetail() {
+    var overlay = document.getElementById('pm-detail-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('visible');
+    setTimeout(function() { overlay.classList.add('hidden'); }, 300);
+  }
+
+  // Close detail panel on Escape
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && state.currentView === 'mind-map') {
+      var overlay = document.getElementById('pm-detail-overlay');
+      if (overlay && !overlay.classList.contains('hidden')) {
+        closePMDetail();
+        e.stopPropagation();
+      }
+    }
+  });
+
+  // Close detail panel on backdrop click
+  document.addEventListener('click', function(e) {
+    if (e.target.id === 'pm-detail-overlay') {
+      closePMDetail();
+    }
+  });
+
   window.App = {
     navigate: navigate,
     wizardNext: wizardNext,
     wizardBack: wizardBack,
     wizardFinish: wizardFinish,
+    wizardSkip: wizardSkip,
+    wizardSelectType: wizardSelectType,
+    wizardCheckClaude: wizardCheckClaude,
+    wizardSaveApiKey: wizardSaveApiKey,
+    wizardRenameAgent: wizardRenameAgent,
+    wizardConfirmRename: wizardConfirmRename,
+    wizardRemoveAgent: wizardRemoveAgent,
     selectTemplate: selectTemplate,
     saveAgent: saveAgent,
     editAgent: editAgent,
@@ -5434,6 +8843,7 @@
     saveMemory: saveMemory,
     switchAgentTab: switchAgentTab,
     switchFilesSubTab: switchFilesSubTab,
+    toggleTeamPerf: toggleTeamPerf,
     loadAgentFiles: loadAgentFiles,
     toggleFilesSection: toggleFilesSection,
     openTask: openTask,
@@ -5448,6 +8858,13 @@
     openMediaPreview: openMediaPreview,
     closeMediaPreview: closeMediaPreview,
     openMediaFolder: openMediaFolder,
+    saveMediaMeta: saveMediaMeta,
+    openAddToKb: openAddToKb,
+    closeAddToKb: closeAddToKb,
+    submitAddToKb: submitAddToKb,
+    openAddToMedia: openAddToMedia,
+    closeAddToMedia: closeAddToMedia,
+    submitAddToMedia: submitAddToMedia,
     saveProfile: saveProfile,
     saveRules: saveRules,
     rebuildContext: rebuildContext,
@@ -5477,6 +8894,12 @@
     deleteCredential: deleteCredential,
     checkForUpdates: checkForUpdates,
     performUpgrade: performUpgrade,
+    runHealthCheck: runHealthCheck,
+    openRemoteControl: openRemoteControl,
+    startRemoteControl: startRemoteControl,
+    stopRemoteControl: stopRemoteControl,
+    closeRemoteControl: closeRemoteControl,
+    copyRcUrl: copyRcUrl,
     closeUpgradeModal: closeUpgradeModal,
     toggleUpgradeBtn: toggleUpgradeBtn,
     confirmUpgrade: confirmUpgrade,
@@ -5484,9 +8907,20 @@
     retryMigrations: retryMigrations,
     rollbackUpgrade: rollbackUpgrade,
     checkClaudeStatus: checkClaudeStatus,
+    loadClaudeAccount: loadClaudeAccount,
+    refreshClaudeStatus: refreshClaudeStatus,
+    switchClaudeMethod: switchClaudeMethod,
+    verifyClaudeCli: verifyClaudeCli,
+    updateClaudeApiKey: updateClaudeApiKey,
+    disconnectClaude: disconnectClaude,
     switchSettingsSection: switchSettingsSection,
     toggleSkill: toggleSkill,
     saveSkillSettings: saveSkillSettings,
+    switchSkillsTab: switchSkillsTab,
+    searchDiscoverSkills: searchDiscoverSkills,
+    loadMoreSkills: loadMoreSkills,
+    installDiscoveredSkill: installDiscoveredSkill,
+    uninstallUserSkill: uninstallUserSkill,
     viewVersionFile: viewVersionFile,
     viewFile: viewFile,
     previewFileInModal: previewFileInModal,
@@ -5495,19 +8929,36 @@
     submitPreviewFeedback: submitPreviewFeedback,
     attachPreviewImage: attachPreviewImage,
     changeTaskStatus: changeTaskStatus,
+    acceptWithoutPlanGuard: acceptWithoutPlanGuard,
     toggleFeedback: toggleFeedback,
+    openSchedulePopover: openSchedulePopover,
+    schedulePreset: schedulePreset,
+    confirmSchedule: confirmSchedule,
+    clearSchedule: clearSchedule,
     pasteImage: pasteImage,
     focusTerminal: function() { if (terminal) { terminal.scrollToBottom(); terminal.focus(); } },
+    toggleMicrophone: toggleMicrophoneSpeech,
     attachTaskImage: attachTaskImage,
     promoteToKnowledge: promoteToKnowledge,
     filterKnowledge: filterKnowledge,
+    filterKbFolder: filterKbFolder,
     openKnowledgeDoc: openKnowledgeDoc,
     deleteKnowledgeDoc: deleteKnowledgeDoc,
+    createKbFolder: createKbFolder,
+    deleteKbFolder: deleteKbFolder,
+    moveKbDoc: moveKbDoc,
+    moveKbDocToFolder: moveKbDocToFolder,
+    kbDragStart: kbDragStart,
+    kbDragEnd: kbDragEnd,
+    kbFolderDragOver: kbFolderDragOver,
+    kbFolderDragLeave: kbFolderDragLeave,
+    kbFolderDrop: kbFolderDrop,
     cleanupTemp: cleanupTemp,
     loadTempStatus: loadTempStatus,
     createBackup: createBackup,
     restoreBackup: restoreBackup,
     deleteBackup: deleteBackup,
+    loadPlannerPage: loadPlannerPage,
     openAutopilotForm: openAutopilotForm,
     cancelAutopilotForm: cancelAutopilotForm,
     saveAutopilot: saveAutopilot,
@@ -5516,6 +8967,11 @@
     deleteAutopilot: deleteAutopilot,
     pauseAllAutopilot: pauseAllAutopilot,
     resumeAllAutopilot: resumeAllAutopilot,
+    setSchedType: setSchedType,
+    pauseSchedule: pauseSchedule,
+    resumeSchedule: resumeSchedule,
+    removeSchedule: removeSchedule,
+    editScheduledAt: editScheduledAt,
     selectHelpTopic: selectHelpTopic,
     navigateTask: navigateTask,
     toggleTaskAutopilot: toggleTaskAutopilot,
@@ -5532,6 +8988,42 @@
     clearAgentFilter: clearAgentFilter,
     selectDep: selectDep,
     toggleSort: toggleSort,
+    setTextFilter: setTextFilter,
+    setTimeFilter: setTimeFilter,
+    toggleGlobalAutopilot: toggleGlobalAutopilot,
+    cancelAutopilotConfirm: cancelAutopilotConfirm,
+    confirmGlobalAutopilot: confirmGlobalAutopilot,
+    toggleNotifications: toggleNotifications,
+    clickNotification: clickNotification,
+    clearAllNotifications: clearAllNotifications,
+    dismissNotification: dismissNotification,
+    saveNotifPrefs: saveNotifPrefs,
+    renderModelRoutingSettings: renderModelRoutingSettings,
+    saveModelRoutingMode: saveModelRoutingMode,
+    applyModelPreset: applyModelPreset,
+    saveModelRoutingConfig: saveModelRoutingConfig,
+    addSmartAgentOverride: addSmartAgentOverride,
+    removeSmartAgentOverride: removeSmartAgentOverride,
+    updateSmartAgentOverride: updateSmartAgentOverride,
+    addSmartTaskTypeOverride: addSmartTaskTypeOverride,
+    removeSmartTaskTypeOverride: removeSmartTaskTypeOverride,
+    updateSmartTaskTypeOverride: updateSmartTaskTypeOverride,
+    resetSmartConfig: resetSmartConfig,
+    saveAgentModel: saveAgentModel,
+    loadAgentDetail: loadAgentDetail,
+    loadMindMap: loadMindMap,
+    selectPMProject: selectPMProject,
+    togglePMChapter: togglePMChapter,
+    openPMChapterDetail: openPMChapterDetail,
+    openPMFeatureDetail: openPMFeatureDetail,
+    closePMDetail: closePMDetail,
+    showBugReportModal: showBugReportModal,
+    closeBugReportModal: closeBugReportModal,
+    toggleBugDiagnostics: toggleBugDiagnostics,
+    toggleScreenshotArea: toggleScreenshotArea,
+    handleScreenshotFile: handleScreenshotFile,
+    removeScreenshot: removeScreenshot,
+    submitBugReport: submitBugReport,
   };
 
   init();
