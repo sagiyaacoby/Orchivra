@@ -1,6 +1,7 @@
 name: macOS terminal regression
 on:
   push:
+    branches: ['fix/macos-terminal-startup']
     paths: ['lib/pty*.js', 'tests/pty.test.js', '.github/workflows/pty-macos.yml']
   workflow_dispatch:
 jobs:
