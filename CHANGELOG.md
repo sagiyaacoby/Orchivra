@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.2 — Final branding audit
+
+- Stop shipping personal runtime configuration and historical notifications in the repository and release source.
+- Keep local runtime files and existing installation settings intact.
+- Verify current documentation, dashboard, installer, and package metadata use Orchivra branding; retain internal migration identifiers for older installations.
+
 ## 3.2.1 — Orchivra rename
 
 - Rename the project, dashboard, documentation, package metadata, and primary installer to Orchivra.
