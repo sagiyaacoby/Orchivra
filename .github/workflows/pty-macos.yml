@@ -1,0 +1,22 @@
+name: macOS terminal regression
+on:
+  push:
+    paths: ['lib/pty*.js', 'tests/pty.test.js', '.github/workflows/pty-macos.yml']
+  workflow_dispatch:
+jobs:
+  terminal:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+        node: [22, 25]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install affected node-pty release without install scripts
+        run: npm install --prefix temp/pty-ci --ignore-scripts --no-audit --no-fund node-pty@1.1.0
+      - name: Reproduce and repair helper permissions on macOS
+        run: NODE_PATH="$PWD/temp/pty-ci/node_modules" node --test tests/pty.test.js

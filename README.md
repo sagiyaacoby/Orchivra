@@ -85,6 +85,20 @@ The dashboard opens at `http://localhost:3777`. From there, open the Command Cen
 
 ---
 
+## macOS terminal troubleshooting
+
+If Command Center reports `posix_spawnp failed`, the macOS `spawn-helper` shipped with node-pty 1.1.0 may be missing execute permission ([upstream report](https://github.com/microsoft/node-pty/issues/850)). This is not specific to Node.js 25, and rebuilding the module may leave the permissions unchanged.
+
+Orchivra repairs the installed helper's execute permissions before opening a terminal and reports startup errors without stopping the server. To repair an older installation, run these commands from its project folder:
+
+```sh
+find node_modules/node-pty -type f -name spawn-helper -exec chmod u+x {} \;
+node -e "const t=require('node-pty').spawn('/bin/echo',['terminal-ok']);t.onData(s=>process.stdout.write(s));t.onExit(e=>process.exit(e.exitCode));"
+node server.js
+```
+
+The check should print `terminal-ok` and exit successfully. It does not change your Node.js version. If it still fails, check that `$SHELL` names an installed executable and that the project folder exists. Include `node -v`, `uname -m`, `npm ls node-pty`, and the helper permissions when reporting the error. A read-only dependency directory needs to be reinstalled in a user-writable location.
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.3 — macOS terminal startup fix
+
+- Repair execute permissions on node-pty's installed macOS spawn helper before starting a terminal.
+- Catch terminal startup failures and show a scrubbed error in Command Center while keeping the server running.
+- Preserve retry behavior and include the fix in both installer templates.
+- Document the helper-permission workaround without requiring a Node.js downgrade.
+
 ## 3.2.2 — Final branding audit
 
 - Stop shipping personal runtime configuration and historical notifications in the repository and release source.
