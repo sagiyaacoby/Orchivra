@@ -1,6 +1,6 @@
 {
   "name": "create-orchivra",
-  "version": "3.2.1",
+  "version": "3.2.3",
   "description": "Create a new Orchivra agent team - multi-agent orchestration powered by Claude CLI",
   "bin": {
     "create-orchivra": "index.js"

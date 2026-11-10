@@ -6,7 +6,7 @@ var path = require('path');
 var { execSync } = require('child_process');
 var readline = require('readline');
 
-var VERSION = '3.2.1';
+var VERSION = '3.2.3';
 
 // ── Colors ──
 var c = {
